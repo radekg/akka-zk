@@ -231,6 +231,54 @@ class ZooKeeprAvailableTest extends TestBase {
       expectNoMsg
     }
 
+    "forward child change events to a subscriber" in {
+
+      var watcherSubscribed = false
+      @volatile
+      var receivedChangeUpdates = 0
+
+      val path = s"/test-node-forward-child-change"
+      val data = Some("with test data")
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequest = ZkRequestProtocol.CreatePersistent(path, data)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+
+      val watcher = TestActorRef(new Actor {
+        def receive = {
+          case "subscribe" =>
+            actor ! ZkRequestProtocol.SubscribeChildChanges(path)
+          case ZkResponseProtocol.SubscriptionSuccess(_) =>
+            watcherSubscribed = true
+          case ZkResponseProtocol.ChildChange(_) =>
+            receivedChangeUpdates = receivedChangeUpdates + 1
+          case anyOther =>
+            fail(s"Unexpected message $anyOther received.")
+        }
+      })
+
+      actor ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
+
+      watcher ! "subscribe"
+      eventually {
+        watcherSubscribed shouldBe true
+      }
+
+      actor ! createRequest
+      expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
+
+      eventually {
+        receivedChangeUpdates should be > 0
+      }
+
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
+
+    }
+
     "forward data change events to a subscriber" in {
 
       var watcherSubscribed = false
@@ -239,7 +287,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val numberOfUpdates = 2
 
-      val path = s"/test-node"
+      val path = s"/test-node-forward-data-change"
       val dataInitial = Some("with test data")
       val dataUpdated = Some("updated data")
 
@@ -278,60 +326,13 @@ class ZooKeeprAvailableTest extends TestBase {
       }
 
       for (i <- 0 until numberOfUpdates) {
+        Thread.sleep(1000) // FIXME: part of the problem above...
         actor ! ZkRequestProtocol.WriteData(path, dataUpdated)
         expectMsgPF() { case ZkResponseProtocol.Written(writeNoneDataRequest, _) => () }
       }
 
       eventually {
         receivedDataChangeUpdates shouldBe numberOfUpdates
-      }
-
-      actor ! ZkRequestProtocol.Stop()
-      expectNoMsg
-
-    }
-
-    "forward child change events to a subscriber" in {
-
-      var watcherSubscribed = false
-      @volatile
-      var receivedChangeUpdates = 0
-
-      val path = s"/test-node"
-      val data = Some("with test data")
-
-      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
-      val createRequest = ZkRequestProtocol.CreatePersistent(path, data)
-
-      val actor = system.actorOf(Props(new ZkClientActor))
-
-      val watcher = TestActorRef(new Actor {
-        def receive = {
-          case "subscribe" =>
-            actor ! ZkRequestProtocol.SubscribeChildChanges(path)
-          case ZkResponseProtocol.SubscriptionSuccess(_) =>
-            watcherSubscribed = true
-          case ZkResponseProtocol.ChildChange(_) =>
-            receivedChangeUpdates = receivedChangeUpdates + 1
-          case anyOther =>
-            fail(s"Unexpected message $anyOther received.")
-        }
-      })
-
-      actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
-
-      watcher ! "subscribe"
-      eventually {
-        watcherSubscribed shouldBe true
-      }
-
-      actor ! createRequest
-      expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
-
-      eventually {
-        receivedChangeUpdates should be > 0
       }
 
       actor ! ZkRequestProtocol.Stop()
