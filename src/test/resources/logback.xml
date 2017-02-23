@@ -1,0 +1,12 @@
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} TKD [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <logger name="org.apache.zookeeper" level="ERROR"/>
+    <logger name="org.I0Itec" level="INFO"/>
+    <root level="debug">
+        <appender-ref ref="STDOUT" />
+    </root>
+</configuration>
