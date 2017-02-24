@@ -528,7 +528,7 @@ object ZkInternalProtocol {
   * @param currentAttempt current connection attempt
   * @param connectRequest maximum number of connection attempts
   * @param requestor [[akka.actor.ActorRef]] of the actor requesting the connection
-  * @param connection underlaying ZooKeeper connection
+  * @param connection underlying ZooKeeper connection
   * @param serializer serializer used for reading and writing the data
   */
 case class ZkClientState(val currentAttempt: Int,
@@ -647,7 +647,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
       streamMaybeProduce(ZkClientStreamProtocol.StateChange(event))
 
     case ZkInternalProtocol.ZkProcessDataChange(event) =>
-      Option(event.underlaying.getPath) match {
+      Option(event.underlying.getPath) match {
         case Some(path) =>
           if (state.dataSubscriptions.contains(path)) {
             streamMaybeProduce(ZkClientStreamProtocol.DataChange(event))
@@ -657,7 +657,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
       }
 
     case ZkInternalProtocol.ZkProcessChildChange(event) =>
-      Option(event.underlaying.getPath) match {
+      Option(event.underlying.getPath) match {
         case Some(path) =>
           if ( state.childSubscriptions.contains(path) ) {
             streamMaybeProduce(ZkClientStreamProtocol.ChildChange(event))

@@ -112,7 +112,7 @@ are per `path` thus requiring an explicit subscription. To initialize a subscrip
   }
 ```
 
-### Handling underlaying ZooKeeper errors
+### Handling underlying ZooKeeper errors
 
 Any operation that failed will be wrapped in and returned as `ZkResponseProtocol.OperationError(originalRequest, cause)`. An example:
 

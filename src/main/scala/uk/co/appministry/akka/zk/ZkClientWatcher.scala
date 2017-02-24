@@ -5,9 +5,9 @@ import org.apache.zookeeper.{WatchedEvent, Watcher}
 
 /**
   * A rich wrapper for the [[org.apache.zookeeper.WatchedEvent]]
-  * @param underlaying original event
+  * @param underlying original event
   */
-case class WatchedEventMeta(val underlaying: WatchedEvent) {
+case class WatchedEventMeta(val underlying: WatchedEvent) {
 
   val dataChangeTriggeringEvents = List(
     EventType.NodeDataChanged,
@@ -19,10 +19,10 @@ case class WatchedEventMeta(val underlaying: WatchedEvent) {
     EventType.NodeCreated,
     EventType.NodeDeleted )
 
-  lazy val stateChanged = Option(underlaying.getPath) == None
-  lazy val znodeChanged = Option(underlaying.getPath) != None
-  lazy val dataChanged = dataChangeTriggeringEvents.contains(underlaying.getType)
-  lazy val childrenChanged = childChangeTriggeringEvents.contains(underlaying.getType)
+  lazy val stateChanged = Option(underlying.getPath) == None
+  lazy val znodeChanged = Option(underlying.getPath) != None
+  lazy val dataChanged = dataChangeTriggeringEvents.contains(underlying.getType)
+  lazy val childrenChanged = childChangeTriggeringEvents.contains(underlying.getType)
 }
 
 /**
