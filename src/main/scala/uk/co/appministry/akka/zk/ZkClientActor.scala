@@ -674,8 +674,6 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
     case ZkRequestProtocol.SetSerializer(serializer) =>
       become(connected, state.copy(serializer = serializer))
 
-    // TODO: recursive delete?
-
     case req @ ZkRequestProtocol.AddAuthInfo(scheme, authInfo) =>
       withMaybeConnection(state) { connection =>
         Try { connection.addAuthInfo(scheme, authInfo) } match {
@@ -709,7 +707,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
           case None    => isPathWatchable(state, path)
         }
         zkGetChildren(connection, state, path) match {
-          case Success(v) => sender ! ZkResponseProtocol.Children(req, v.asScala.toList)
+          case Success(v) => sender ! ZkResponseProtocol.Children(req, v.asScala.toList.sorted)
           case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
