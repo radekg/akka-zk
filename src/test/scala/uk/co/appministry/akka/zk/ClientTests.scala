@@ -7,6 +7,9 @@ import akka.actor.{Actor, OneForOneStrategy, Props, SupervisorStrategy}
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, Sink, Source}
 import akka.testkit.TestActorRef
+import org.apache.zookeeper.{KeeperException, ZooDefs}
+import org.apache.zookeeper.data.ACL
+
 import scala.collection.JavaConverters._
 
 class ZooKeeprAvailableTest extends TestBase {
@@ -201,11 +204,40 @@ class ZooKeeprAvailableTest extends TestBase {
     }
 
     "correctly handles ACL without auth info" in {
-      // TODO: implement
+      val parent = "/"
+      val testNode = "acl-test-node"
+      val path = s"$parent$testNode"
+      val data = Some("test data")
+      val acl = List(new ACL(ZooDefs.Perms.READ, ZooDefs.Ids.ANYONE_ID_UNSAFE))
+      val aclRequest = ZkRequestProtocol.SetAcl(path, acl)
+      val dataUpdateRequest = ZkRequestProtocol.WriteData(path, Some("updated data"))
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequest = ZkRequestProtocol.CreateEphemeral(path, None)
+      val getChildrenRequest = ZkRequestProtocol.GetChildren(parent)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actor ! createRequest
+      expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
+      actor ! aclRequest
+      expectMsg( ZkResponseProtocol.AclSet(aclRequest) )
+      actor ! dataUpdateRequest
+      expectMsgPF() { case ZkResponseProtocol.OperationError(dataUpdateRequest, cause) =>
+        cause match {
+          case e: KeeperException.NoAuthException =>
+          case anyOther =>
+            fail(s"Expected KeeperException.NoAuthException but got $anyOther")
+        }
+        ()
+      }
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
     }
 
-    "correctly handles ACL with auth info" in {
-      // TODO: implement
+    "correctly handles ACL with auth info" ignore {
+      // TODO: find a way to implement this
     }
 
     "reply to SASL status request" in {
