@@ -150,7 +150,54 @@ class ZooKeeprAvailableTest extends TestBase {
     }
 
     "correctly handle ephemeral sequential ZooKeeper nodes" in {
-      // TODO: implement
+      val parent = "/"
+      val testNode = "ephemeral-sequential-node-test"
+      val path = s"$parent$testNode"
+      val nodesCreated = new util.ArrayList[String]()
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequest = ZkRequestProtocol.CreateEphemeral(path, None, sequential = true)
+      val getChildrenRequest = ZkRequestProtocol.GetChildren(parent)
+
+      val actor1 = system.actorOf(Props(new ZkClientActor))
+      actor1 ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actor1 ! createRequest
+      expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => {
+        nodesCreated.add(result.replace(parent, ""))
+        ()
+      } }
+
+      val actor2 = system.actorOf(Props(new ZkClientActor))
+      actor2 ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actor2 ! createRequest
+      expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => {
+        nodesCreated.add(result.replace(parent, ""))
+        ()
+      } }
+
+      actor1 ! getChildrenRequest
+      expectMsg( ZkResponseProtocol.Children(getChildrenRequest, nodesCreated.asScala.toList ++ List("zookeeper")) )
+
+      nodesCreated.asScala.toList.foreach { node =>
+        val deleteRequest = ZkRequestProtocol.Delete(s"$parent$node")
+        actor1 ! deleteRequest
+        expectMsg( ZkResponseProtocol.Deleted(deleteRequest) )
+      }
+
+      actor1 ! ZkRequestProtocol.Stop()
+      expectNoMsg
+      actor2 ! ZkRequestProtocol.Stop()
+      expectNoMsg
+
+      val actorVerifier = system.actorOf(Props(new ZkClientActor))
+      actorVerifier ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actorVerifier ! getChildrenRequest
+      expectMsg( ZkResponseProtocol.Children(getChildrenRequest, List("zookeeper")) )
+      actorVerifier ! ZkRequestProtocol.Stop()
+      expectNoMsg
     }
 
     "correctly handles ACL without auth info" in {
@@ -194,7 +241,7 @@ class ZooKeeprAvailableTest extends TestBase {
       expectNoMsg
     }
 
-    "return OperationException when attempting writing to None existing node" in {
+    "return OperationException when attempting writing to non-existing node" in {
       val path = s"/write-test"
       val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
       val writeDataRequest = ZkRequestProtocol.WriteData(path, Some("test data"))

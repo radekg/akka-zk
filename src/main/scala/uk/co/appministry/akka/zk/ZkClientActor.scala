@@ -709,7 +709,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
           case None    => isPathWatchable(state, path)
         }
         zkGetChildren(connection, state, path) match {
-          case Success(v) => sender ! ZkResponseProtocol.Children(req, v.asScala.toList)
+          case Success(v) => sender ! ZkResponseProtocol.Children(req, v.asScala.toList.sorted)
           case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
