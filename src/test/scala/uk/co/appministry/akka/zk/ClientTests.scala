@@ -21,7 +21,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
     "correctly handle persistent non-sequential ZooKeeper nodes" in {
       val parent = "/"
-      val testNode = "hello-test-world"
+      val testNode = "persistent-non-sequential-node-test"
       val path = s"$parent$testNode"
       val data = Some("test data for the node")
 
@@ -70,23 +70,52 @@ class ZooKeeprAvailableTest extends TestBase {
       expectNoMsg
     }
 
-    "correctly handles ACL without auth info" in {
-      // TODO: implement
-    }
-
-    "correctly handles ACL with auth info" in {
-      // TODO: implement
-    }
-
     "correctly handle persistent sequential ZooKeeper nodes" in {
       // TODO: implement
     }
 
     "correctly handle ephemeral non-sequential ZooKeeper nodes" in {
-      // TODO: implement
+      val parent = "/"
+      val testNode = "ephemeral-non-sequential-node-test"
+      val path = s"$parent$testNode"
+      val data = Some("test data for the node")
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequest = ZkRequestProtocol.CreateEphemeral(path, data)
+      val getChildrenRequest = ZkRequestProtocol.GetChildren(parent)
+      val countChildrenRequest = ZkRequestProtocol.CountChildren(parent)
+      val nodeExistsRequest = ZkRequestProtocol.IsExisting(path)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actor ! countChildrenRequest
+      expectMsg( ZkResponseProtocol.ChildrenCount(countChildrenRequest, 1) )
+      actor ! createRequest
+      expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
+      actor ! nodeExistsRequest
+      expectMsg( ZkResponseProtocol.Existence(nodeExistsRequest, PathExistenceStatus.Exists) )
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
+
+      val actorVerifier = system.actorOf(Props(new ZkClientActor))
+      actorVerifier ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actorVerifier ! nodeExistsRequest
+      expectMsg( ZkResponseProtocol.Existence(nodeExistsRequest, PathExistenceStatus.DoesNotExist) )
+      actorVerifier ! ZkRequestProtocol.Stop()
+      expectNoMsg
     }
 
     "correctly handle ephemeral sequential ZooKeeper nodes" in {
+      // TODO: implement
+    }
+
+    "correctly handles ACL without auth info" in {
+      // TODO: implement
+    }
+
+    "correctly handles ACL with auth info" in {
       // TODO: implement
     }
 
