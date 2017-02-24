@@ -2,9 +2,8 @@ package uk.co.appministry.akka.zk
 
 import java.io.File
 import java.util
-import java.util.ArrayList
-import java.util.{List => JList}
 import java.util.concurrent.ConcurrentHashMap
+import java.util.{List => JList}
 import javax.security.auth.login.Configuration
 
 import akka.actor.{Actor, ActorLogging, ActorRef}
@@ -142,18 +141,23 @@ object ZkRequestProtocol {
   sealed trait UnsubscribeRequest extends Request
 
   /**
-    *
+    * Add the specified scheme:auth information to this connection.
     * @param scheme
     * @param authInfo
     */
   final case class AddAuthInfo(val scheme: String, val authInfo: Array[Byte]) extends Request
 
   /**
-    *
-    * @param connectionString
-    * @param connectionTimeout
-    * @param connectionAttempts
-    * @param sessionTimeout
+    * Connect to the server.
+    * @param connectionString comma separated host:port pairs, each corresponding to a zk server. e.g.
+    *                         "127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002" If the optional chroot suffix is used
+    *                         the example would look like: "127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a" where
+    *                         the client would be rooted at "/app/a" and all paths would be relative to this
+    *                         root - ie getting/setting/etc... "/foo/bar" would result in operations being run on
+    *                         "/app/a/foo/bar" (from the server perspective).
+    * @param connectionTimeout connection timeout
+    * @param connectionAttempts how many times to retry a failed connect attempt
+    * @param sessionTimeout session timeout
     */
   final case class Connect(val connectionString: String = ZkClientProtocolDefaults.ConnectionString,
                            val connectionTimeout: FiniteDuration = ZkClientProtocolDefaults.ConnectionTimeout,
@@ -161,75 +165,78 @@ object ZkRequestProtocol {
                            val sessionTimeout: FiniteDuration = ZkClientProtocolDefaults.SessionTimeout) extends Request
 
   /**
-    *
-    * @param path
+    * Return the number the children of the node of the given path.
+    * @param path the given path for the node
     */
   final case class CountChildren(val path: String) extends Request
 
   /**
-    *
-    * @param path
-    * @param data
-    * @param acls
-    * @param sequential
+    * Create an ephemeral node with the given path.
+    * @param path the given path for the node
+    * @param data the initial data for the node
+    * @param acl the acl for the node
+    * @param sequential should the node be sequential
     */
   final case class CreateEphemeral(val path: String,
                                    val data: Option[Any] = None,
-                                   val acls: List[ACL] = ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala.toList,
+                                   val acl: List[ACL] = ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala.toList,
                                    val sequential: Boolean = false) extends CreateRequest
 
   /**
-    *
-    * @param path
-    * @param data
-    * @param acls
-    * @param sequential
+    * Create a persistent node with the given path.
+    * @param path the given path for the node
+    * @param data the initial data for the node
+    * @param acl the acl for the node
+    * @param sequential should the node be sequential
     */
   final case class CreatePersistent(val path: String,
                                     val data: Option[Any] = None,
-                                    val acls: List[ACL] = ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala.toList,
+                                    val acl: List[ACL] = ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala.toList,
                                     val sequential: Boolean = false) extends CreateRequest
 
   /**
-    *
-    * @param path
+    * Get the timestamp of when the node has been created.
+    * @param path the given path for the node
     */
   final case class CreatedWhen(val path: String) extends Request
 
   /**
-    *
-    * @param path
-    * @param version
+    * Delete a node with a given path.
+    * @param path the given path for the node
+    * @param version the expected node version
     */
   final case class Delete(val path: String, val version: Int = -1) extends Request
 
   /**
-    *
-    * @param path
+    * Return the ACL and stat of the node of the given path.
+    * @param path the given path for the node
     */
   final case class GetAcl(val path: String) extends Request
 
   /**
-    *
-    * @param path
-    * @param watch
+    * Return the list of the children of the node of the given path.
+    * @param path the given path for the node
+    * @param watch watch for changes
     */
   final case class GetChildren(val path: String, val watch: Option[Boolean] = None) extends Request
 
   /**
-    *
-    * @param path
+    * Check if the node exists.
+    * @param path the given path for the node
     */
   final case class IsExisting(val path: String) extends Request
 
+  /**
+    * Check if SASL is enabled.
+    */
   final case class IsSaslEnabled() extends Request
 
   /**
-    *
-    * @param path
-    * @param stat
-    * @param watch
-    * @param noneIfNoPath
+    * Return the data and the stat of the node of the given path.
+    * @param path the given path for the node
+    * @param stat the stat of the node
+    * @param watch watch for changes
+    * @param noneIfNoPath return None if node at path does not exist instead of returning an OperationError
     */
   final case class ReadData(val path: String,
                             val stat: Option[Stat] = None,
@@ -237,20 +244,22 @@ object ZkRequestProtocol {
                             val noneIfNoPath: Boolean = false) extends Request
 
   /**
-    *
+    * Request metrics snapshot.
     */
   final case class Metrics() extends Request
 
   /**
-    *
-    * @param ops
+    * Executes multiple ZooKeeper operations or none of them.
+    * @param ops An iterable that contains the operations to be done. These should be created using the factory methods
+    *            on Op.
     */
   final case class Multi(val ops: List[Op]) extends Request
 
   /**
-    *
-    * @param path
-    * @param acl
+    * Set the ACL for the node of the given path if such a node exists and the given version matches the version of the
+    * node.
+    * @param path the given path for the node
+    * @param acl the new acl for the node
     */
   final case class SetAcl(val path: String, val acl: List[ACL]) extends Request
 
@@ -261,39 +270,40 @@ object ZkRequestProtocol {
   final case class SetSerializer(val serializer: ZkSerializer) extends Request
 
   /**
-    * Stop the ZooKeeper client. Disconnect from ZooKeeper, if necessary.
+    * Stop the ZooKeeper client. Disconnect from ZooKeeper, if necessary. Will stop the actor.
     */
   final case class Stop()
 
   /**
-    *
-    * @param path
+    * Subscribe to the children changes of the znode at the path.
+    * @param path the given path for the node
     */
   final case class SubscribeChildChanges(val path: String) extends SubscribeRequest
 
   /**
-    *
-    * @param path
+    * Subscribe to the data changes of the znode at the path.
+    * @param path the given path for the node
     */
   final case class SubscribeDataChanges(val path: String) extends SubscribeRequest
 
   /**
-    *
-    * @param path
+    * Unsubscribe from the children changes of the znode at the path.
+    * @param path the given path for the node
     */
   final case class UnsubscribeChildChanges(val path: String) extends UnsubscribeRequest
 
   /**
-    *
-    * @param path
+    * Unsubscribe from the data changes of the znode at the path.
+    * @param path the given path for the node
     */
   final case class UnsubscribeDataChanges(val path: String) extends UnsubscribeRequest
 
   /**
-    *
-    * @param path
-    * @param data
-    * @param expectedVersion
+    * Set the data for the node of the given path if such a node exists and the given version matches the version of the
+    * node (if the given version is -1, it matches any node's versions).
+    * @param path the given path for the node
+    * @param data new data for the node
+    * @param expectedVersion expected version
     */
   final case class WriteData(val path: String,
                              val data: Option[Any],
@@ -312,151 +322,152 @@ object ZkResponseProtocol {
   sealed trait Response
 
   /**
-    *
-    * @param request original request
-    * @param entry ACL data entry
+    * [[ZkRequestProtocol.GetAcl]] response.
+    * @param request the original request
+    * @param entry acl data entry
     */
   final case class AclData(val request: ZkRequestProtocol.GetAcl, val entry: AclEntry) extends Response
 
   /**
-    *
-    * @param request original request
+    * [[ZkRequestProtocol.SetAcl]] response.
+    * @param request the original request
     */
   final case class AclSet(val request: ZkRequestProtocol.SetAcl) extends Response
 
   /**
-    *
-    * @param request original request
+    * [[ZkRequestProtocol.AddAuthInfo]] response.
+    * @param request the original request
     */
   final case class AuthInfoAdded(val request: ZkRequestProtocol.AddAuthInfo) extends Response
 
   /**
-    *
+    * ZooKeeper client is not yet connected. Expected after issuing [[ZkRequestProtocol.Connect]], until the client
+    * successfully connects.
     */
   final case class AwaitingConnection() extends Response
 
   /**
-    *
-    * @param event
+    * Subscriber event for child change subscriptions.
+    * @param event original ZooKeeper event
     */
   final case class ChildChange(val event: WatchedEvent) extends Response
 
   /**
-    *
-    * @param request original request
-    * @param result list of node's children
+    * [[ZkRequestProtocol.GetChildren]] response.
+    * @param request the original request
+    * @param result list of znode's children
     */
   final case class Children(val request: ZkRequestProtocol.GetChildren, val result: List[String]) extends Response
 
   /**
-    *
-    * @param request original request
-    * @param result number of children nodes
+    * [[ZkRequestProtocol.CountChildren]] response.
+    * @param request the original request
+    * @param result number of znode's children, if znode exists
     */
   final case class ChildrenCount(val request: ZkRequestProtocol.CountChildren, val result: Int) extends Response
 
   /**
-    *
-    * @param request original request
+    * Issued to the ZkClient parent when the client successfully connects.
+    * @param request the original request
     */
   final case class Connected(val request: ZkRequestProtocol.Connect) extends Response
 
   /**
-    *
-    * @param request original request
+    * [[ZkRequestProtocol.CreatePersistent]] and [[ZkRequestProtocol.CreateEphemeral]] response.
+    * @param request the original request
     * @param result the actual path of the created node
     */
   final case class Created(val request: ZkRequestProtocol.CreateRequest, val result: String) extends Response
 
   /**
-    *
-    * @param request original request
-    * @param timestamp
+    * [[ZkRequestProtocol.CreatedWhen]] response.
+    * @param request the original request
+    * @param timestamp timestamp of when the znode has been created, if znode exists
     */
   final case class CreatedAt(val request: ZkRequestProtocol.CreatedWhen, val timestamp: Long) extends Response
 
-  /**
-    *
-    * @param request original request
-    * @param data
+  /** // TODO: add stat here
+    * [[ZkRequestProtocol.ReadData]] response.
+    * @param request the original request
+    * @param data the data of the znode
     */
   final case class Data(val request: ZkRequestProtocol.ReadData, val data: Option[Any]) extends Response
 
   /**
-    *
-    * @param event
+    * Subscriber event for data change subscriptions.
+    * @param event original ZooKeeper event
     */
   final case class DataChange(val event: WatchedEvent) extends Response
 
   /**
-    *
+    * Issued to the parent of the ZkClient when the [[ZkRequestProtocol.Connect]] has not been issued yet.
     */
   final case class Disconnected() extends Response
 
   /**
-    *
-    * @param request original request
+    * [[ZkRequestProtocol.Delete]] response.
+    * @param request the original request
     */
   final case class Deleted(val request: ZkRequestProtocol.Delete) extends Response
 
   /**
-    *
-    * @param request original request
-    * @param status
+    * [[ZkRequestProtocol.IsExisting]] response.
+    * @param request the original request
+    * @param status znode's existence status
     */
-  final case class Existence(val request: ZkRequestProtocol.IsExisting, val status: PathExistenceStatus.Status) extends Response
+  final case class Existence(val request: ZkRequestProtocol.IsExisting, val status: PathExistenceStatus.Status)
+    extends Response
 
   /**
-    *
-    * @param request original request
+    * [[ZkRequestProtocol.Metrics]] response.
+    * @param request the original request
     * @param metrics current metrics snapshot
     */
   final case class Metrics(val request: ZkRequestProtocol.Metrics, val metrics: Map[String, Long]) extends Response
 
   /**
-    *
-    * @param request original request
+    * [[ZkRequestProtocol.Multi]] response.
+    * @param request the original request
     * @param results
     */
   final case class MultiResponse(val request: ZkRequestProtocol.Multi, val results: List[OpResult]) extends Response
 
   /**
-    * Wraps any potential ZooKeeper exception encountered while executing an operation.
-    *
+    * Any failed ZooKeeper request is presented with this object.
     * @param request request for which the exception occured
     * @param reason  original exception
     */
   final case class OperationError(val request: ZkRequestProtocol.Request, val reason: Throwable) extends Response
 
   /**
-    *
-    * @param request
-    * @param status
+    * [[ZkRequestProtocol.IsSaslEnabled]] response.
+    * @param request the original request
+    * @param status SASL status
     */
   final case class Sasl(val request: ZkRequestProtocol.IsSaslEnabled, val status: SaslStatus.Status) extends Response
 
   /**
-    *
-    * @param event
+    * Issued to the parent of the ZkClient when the client connection state changes.
+    * @param event the original request
     */
   final case class StateChange(val event: WatchedEvent) extends Response
 
   /**
-    *
-    * @param request
+    * [[ZkRequestProtocol.SubscribeRequest]] response.
+    * @param request the original request
     */
   final case class SubscriptionSuccess(val request: ZkRequestProtocol.SubscribeRequest) extends Response
 
   /**
-    *
-    * @param request
+    * [[ZkRequestProtocol.UnsubscribeRequest]] response.
+    * @param request the original request
     */
   final case class UnsubscriptionSuccess(val request: ZkRequestProtocol.UnsubscribeRequest) extends Response
 
   /**
-    *
-    * @param request original request
-    * @param stat
+    * [[ZkRequestProtocol.WriteData]] response.
+    * @param request the original request
+    * @param stat the stat of the node
     */
   final case class Written(val request: ZkRequestProtocol.WriteData, val stat: Stat) extends Response
 
@@ -514,8 +525,8 @@ case class ZkClientState(val currentAttempt: Int,
                          val requestor: Option[ActorRef],
                          val connection: Option[ZkConnection] = None,
                          val serializer: ZkSerializer = new SerializableSerializer,
-                         val dataChangeSubscriptions: ConcurrentHashMap[String, JList[ActorRef]] = new ConcurrentHashMap[String, JList[ActorRef]](),
-                         val childChangeSubscriptions: ConcurrentHashMap[String, JList[ActorRef]] = new ConcurrentHashMap[String, JList[ActorRef]]())
+                         val dataSubscriptions: ConcurrentHashMap[String, JList[ActorRef]] = new ConcurrentHashMap[String, JList[ActorRef]](),
+                         val childSubscriptions: ConcurrentHashMap[String, JList[ActorRef]] = new ConcurrentHashMap[String, JList[ActorRef]]())
 
 /**
   * Akka ZooKeeper client.
@@ -624,7 +635,7 @@ class ZkClientActor extends Actor with ActorLogging with ZkClientWatcher {
     case ZkInternalProtocol.ZkProcessDataChange(event) =>
       Option(event.getPath) match {
         case Some(path) =>
-          state.dataChangeSubscriptions.getOrDefault(path, List.empty[ActorRef].asJava).asScala.foreach { ref =>
+          state.dataSubscriptions.getOrDefault(path, List.empty[ActorRef].asJava).asScala.foreach { ref =>
             ref ! ZkResponseProtocol.DataChange(event)
           }
         case None =>
@@ -634,7 +645,7 @@ class ZkClientActor extends Actor with ActorLogging with ZkClientWatcher {
     case ZkInternalProtocol.ZkProcessChildChange(event) =>
       Option(event.getPath) match {
         case Some(path) =>
-          state.childChangeSubscriptions.getOrDefault(path, List.empty[ActorRef].asJava).asScala.foreach { ref =>
+          state.childSubscriptions.getOrDefault(path, List.empty[ActorRef].asJava).asScala.foreach { ref =>
             ref ! ZkResponseProtocol.ChildChange(event)
           }
         case None =>
@@ -801,11 +812,11 @@ class ZkClientActor extends Actor with ActorLogging with ZkClientWatcher {
 
     case req @ ZkRequestProtocol.SubscribeChildChanges(path) =>
       withMaybeConnection(state) { connection =>
-        val members = state.childChangeSubscriptions.getOrDefault(path, new util.ArrayList[ActorRef]())
+        val members = state.childSubscriptions.getOrDefault(path, new util.ArrayList[ActorRef]())
         if (!members.contains(sender)) {
           members.add(sender)
         }
-        state.childChangeSubscriptions.put(path, members)
+        state.childSubscriptions.put(path, members)
         zkExists(connection, path, true)
         become(connected, state)
         metricChildChangeSubscribersCount.inc()
@@ -814,11 +825,11 @@ class ZkClientActor extends Actor with ActorLogging with ZkClientWatcher {
 
     case req @ ZkRequestProtocol.SubscribeDataChanges(path) =>
       withMaybeConnection(state) { connection =>
-        val members = state.dataChangeSubscriptions.getOrDefault(path, new util.ArrayList[ActorRef]())
+        val members = state.dataSubscriptions.getOrDefault(path, new util.ArrayList[ActorRef]())
         if (!members.contains(sender)) {
           members.add(sender)
         }
-        state.dataChangeSubscriptions.put(path, members)
+        state.dataSubscriptions.put(path, members)
         zkExists(connection, path, true)
         become(connected, state)
         metricDataChangeSubscribersCount.inc()
@@ -826,18 +837,18 @@ class ZkClientActor extends Actor with ActorLogging with ZkClientWatcher {
       }
 
     case req @ ZkRequestProtocol.UnsubscribeChildChanges(path) =>
-      val members = state.childChangeSubscriptions.getOrDefault(path, new util.ArrayList[ActorRef]())
+      val members = state.childSubscriptions.getOrDefault(path, new util.ArrayList[ActorRef]())
       if (members.remove(sender)) {
-        state.childChangeSubscriptions.put(path, members)
+        state.childSubscriptions.put(path, members)
       }
       become(connected, state)
       metricChildChangeSubscribersCount.dec()
       sender ! ZkResponseProtocol.UnsubscriptionSuccess(req)
 
     case req @ ZkRequestProtocol.UnsubscribeDataChanges(path) =>
-      val members = state.dataChangeSubscriptions.getOrDefault(path, List(sender).asJava)
+      val members = state.dataSubscriptions.getOrDefault(path, List(sender).asJava)
       if (members.remove(sender)) {
-        state.dataChangeSubscriptions.put(path, members)
+        state.dataSubscriptions.put(path, members)
       }
       become(connected, state)
       metricDataChangeSubscribersCount.dec()
@@ -879,8 +890,8 @@ class ZkClientActor extends Actor with ActorLogging with ZkClientWatcher {
 
   private def hasListeners(state: ZkClientState, path: String): Boolean = {
     val empty = List.empty[ActorRef].asJava
-    if (state.childChangeSubscriptions.getOrDefault(path, empty).size() > 0
-      || state.dataChangeSubscriptions.getOrDefault(path, empty).size() > 0) {
+    if (state.childSubscriptions.getOrDefault(path, empty).size() > 0
+      || state.dataSubscriptions.getOrDefault(path, empty).size() > 0) {
       return true
     }
     false
