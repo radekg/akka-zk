@@ -59,6 +59,9 @@ object PathExistenceStatus {
   final case object DoesNotExist extends Status
 }
 
+/**
+  * Convenience ZooKeeper SASL properties.
+  */
 object SaslProperties {
   final val JavaLoginConfigParam = "java.security.auth.login.config"
   final val ZkSaslClient = "zookeeper.sasl.client"
@@ -106,6 +109,9 @@ object ZkClientProtocolDefaults {
   val SessionTimeout = 30 seconds
 }
 
+/**
+  * Metric names.
+  */
 object ZkClientMetricNames {
   sealed abstract class MetricName(val name: String)
   case object ChildChangePathsObservedCount extends MetricName("child-change-paths-observed-count")
@@ -448,27 +454,33 @@ object ZkResponseProtocol {
 
 }
 
+/**
+  * ZooKeeper client streaming protocol.
+  */
 object ZkClientStreamProtocol {
 
+  /**
+    * A streaming response.
+    */
   sealed trait StreamResponse
 
   /**
     * Subscriber event for child change subscriptions.
     * @param event original ZooKeeper event
     */
-  final case class ChildChange(val event: WatchedEvent) extends StreamResponse
+  final case class ChildChange(val event: WatchedEventMeta) extends StreamResponse
 
   /**
     * Subscriber event for data change subscriptions.
     * @param event original ZooKeeper event
     */
-  final case class DataChange(val event: WatchedEvent) extends StreamResponse
+  final case class DataChange(val event: WatchedEventMeta) extends StreamResponse
 
   /**
     * Issued to the parent of the ZkClient when the client connection state changes.
     * @param event the original request
     */
-  final case class StateChange(val event: WatchedEvent) extends StreamResponse
+  final case class StateChange(val event: WatchedEventMeta) extends StreamResponse
 
 }
 
@@ -496,19 +508,19 @@ object ZkInternalProtocol {
     * A ZooKeeper state change event is ready for processing.
     * @param event the state event
     */
-  private[zk] final case class ZkProcessStateChange(val event: WatchedEvent)
+  private[zk] final case class ZkProcessStateChange(val event: WatchedEventMeta)
 
   /**
     * A ZooKeeper child change event is ready for processing.
     * @param event the data or child event
     */
-  private[zk] final case class ZkProcessChildChange(val event: WatchedEvent)
+  private[zk] final case class ZkProcessChildChange(val event: WatchedEventMeta)
 
   /**
     * A ZooKeeper node data change event is ready for processing.
     * @param event the data or child event
     */
-  private[zk] final case class ZkProcessDataChange(val event: WatchedEvent)
+  private[zk] final case class ZkProcessDataChange(val event: WatchedEventMeta)
 }
 
 /**
@@ -516,7 +528,7 @@ object ZkInternalProtocol {
   * @param currentAttempt current connection attempt
   * @param connectRequest maximum number of connection attempts
   * @param requestor [[akka.actor.ActorRef]] of the actor requesting the connection
-  * @param connection underlaying ZooKeeper connection
+  * @param connection underlying ZooKeeper connection
   * @param serializer serializer used for reading and writing the data
   */
 case class ZkClientState(val currentAttempt: Int,
@@ -530,9 +542,12 @@ case class ZkClientState(val currentAttempt: Int,
 /**
   * Akka ZooKeeper client.
   *
-  * TODO: usage...
-  * TODO: Intead of using ActorPublisher, consider using the [[org.reactivestreams.Publisher]].
-  *       According to the Akka docs, ActorPublisher may be removed in the future.
+  * <p>
+  *   Reactive ZooKeeper client.<br/>
+  *   Check <a href="https://github.com/AppMinistry/akka-zk">https://github.com/AppMinistry/akka-zk</a> for details.
+  * <p>
+  *   TODO: Intead of using ActorPublisher, consider using the [[org.reactivestreams.Publisher]].<br/>
+  *   According to the Akka docs, ActorPublisher may be removed in the future.
   */
 class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.StreamResponse] with ActorLogging with ZkClientWatcher {
 
@@ -632,7 +647,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
       streamMaybeProduce(ZkClientStreamProtocol.StateChange(event))
 
     case ZkInternalProtocol.ZkProcessDataChange(event) =>
-      Option(event.getPath) match {
+      Option(event.underlying.getPath) match {
         case Some(path) =>
           if (state.dataSubscriptions.contains(path)) {
             streamMaybeProduce(ZkClientStreamProtocol.DataChange(event))
@@ -642,7 +657,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
       }
 
     case ZkInternalProtocol.ZkProcessChildChange(event) =>
-      Option(event.getPath) match {
+      Option(event.underlying.getPath) match {
         case Some(path) =>
           if ( state.childSubscriptions.contains(path) ) {
             streamMaybeProduce(ZkClientStreamProtocol.ChildChange(event))
