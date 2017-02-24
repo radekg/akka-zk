@@ -11,7 +11,7 @@ Reactive akka ZooKeeper client.
 ### Dependencies
 
     libraryDependencies ++= Seq(
-      "uk.co.appministry" %% "akka-zk" % "0.1.0"
+      "uk.co.appministry" %% "akka-zk" % "0.1.0-snapshot"
     )
 
 ## Examples
