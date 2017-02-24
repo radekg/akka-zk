@@ -7,7 +7,8 @@ import akka.actor.{Actor, OneForOneStrategy, Props, SupervisorStrategy}
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, Sink, Source}
 import akka.testkit.TestActorRef
-import org.apache.zookeeper.{KeeperException, ZooDefs}
+import org.apache.zookeeper.ZooDefs.OpCode
+import org.apache.zookeeper._
 import org.apache.zookeeper.data.ACL
 
 import scala.collection.JavaConverters._
@@ -236,10 +237,6 @@ class ZooKeeprAvailableTest extends TestBase {
       expectNoMsg
     }
 
-    "correctly handles ACL with auth info" ignore {
-      // TODO: find a way to implement this
-    }
-
     "reply to SASL status request" in {
       val actor = system.actorOf(Props(new ZkClientActor))
       val request = ZkRequestProtocol.IsSaslEnabled()
@@ -323,8 +320,54 @@ class ZooKeeprAvailableTest extends TestBase {
       expectNoMsg
     }
 
-    "correctly handles multi" in {
-      // TODO: implement
+    "correctly handles successful multi" in {
+      val parent = "/"
+      val nodes = List("multi-test-path1", "multi-test-path2", "multi-test-path3")
+      val ops = nodes.map { node => Op.create(s"$parent$node", null, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL) }
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val multiRequest = ZkRequestProtocol.Multi(ops)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actor ! multiRequest
+      expectMsgPF() { case ZkResponseProtocol.MultiResponse(multiRequest, results) => {
+        results.filter { opResult => opResult.getType == OpCode.create }.length shouldBe nodes.length
+        ()
+      } }
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
+    }
+
+    "correctly handles failing multi" in {
+      val parent = "/"
+      val nodes = List("multi-test-path1", "multi-test-path2", "with-non-existing-parent/multi-test-path3")
+      val ops = nodes.map { node => Op.create(s"$parent$node", null, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL) }
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val multiRequest = ZkRequestProtocol.Multi(ops)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actor ! multiRequest
+      expectMsgPF() { case ZkResponseProtocol.OperationError(multiRequest, cause) => {
+        cause match {
+          case _: KeeperException.NoNodeException =>
+          case anyOther =>
+            fail(s"Expected KeeperException.NoNodeException but received $anyOther")
+        }
+        ()
+      } }
+
+      actor ! ZkRequestProtocol.IsExisting(s"$parent${nodes(0)}")
+      expectMsgPF() { case ZkResponseProtocol.Existence(_, PathExistenceStatus.DoesNotExist) => () }
+      actor ! ZkRequestProtocol.IsExisting(s"$parent${nodes(1)}")
+      expectMsgPF() { case ZkResponseProtocol.Existence(_, PathExistenceStatus.DoesNotExist) => () }
+
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
     }
 
     "subscribe and unsubscribe for child change events" in {
@@ -463,6 +506,18 @@ class ZooKeeprAvailableTest extends TestBase {
       actor ! ZkRequestProtocol.Stop()
       expectNoMsg
 
+    }
+
+    "handle ACL with auth info" ignore {
+      // TODO: find a way to implement this
+    }
+
+    "handle recursive create and delete" ignore {
+      // TODO: implement on the operation level
+    }
+
+    "gracefully handle connection loss" ignore {
+      // TODO: implement in the client
     }
 
   }

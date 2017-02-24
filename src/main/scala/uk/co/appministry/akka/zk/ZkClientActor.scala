@@ -674,8 +674,6 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
     case ZkRequestProtocol.SetSerializer(serializer) =>
       become(connected, state.copy(serializer = serializer))
 
-    // TODO: recursive delete?
-
     case req @ ZkRequestProtocol.AddAuthInfo(scheme, authInfo) =>
       withMaybeConnection(state) { connection =>
         Try { connection.addAuthInfo(scheme, authInfo) } match {
