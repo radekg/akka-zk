@@ -2,6 +2,8 @@ package uk.co.appministry.akka.zk
 
 import akka.actor.SupervisorStrategy.Stop
 import akka.actor.{Actor, OneForOneStrategy, Props, SupervisorStrategy}
+import akka.stream.ActorMaterializer
+import akka.stream.scaladsl.{Flow, Sink, Source}
 import akka.testkit.TestActorRef
 
 class ZooKeeprAvailableTest extends TestBase {
@@ -13,7 +15,6 @@ class ZooKeeprAvailableTest extends TestBase {
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
       expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
       actor ! ZkRequestProtocol.Stop()
       expectNoMsg
     }
@@ -37,7 +38,6 @@ class ZooKeeprAvailableTest extends TestBase {
       // connect:
       actor ! connectRequest
       expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
       // ZooKeeper should be clean:
       actor ! countChildrenRequest
       expectMsg( ZkResponseProtocol.ChildrenCount(countChildrenRequest, 1) )
@@ -55,7 +55,7 @@ class ZooKeeprAvailableTest extends TestBase {
       expectMsg( ZkResponseProtocol.Existence(nodeExistsRequest, PathExistenceStatus.Exists) )
       // read the data
       actor ! readDataRequest
-      expectMsg( ZkResponseProtocol.Data(readDataRequest, data) )
+      expectMsgPF() { case ZkResponseProtocol.Data(readDataRequest, data, _) => () }
       // creation time:
       actor ! creationTimeRequest
       expectMsgPF() { case ZkResponseProtocol.CreatedAt(creationTimeRequest, _) => () }
@@ -104,7 +104,6 @@ class ZooKeeprAvailableTest extends TestBase {
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
       expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
       actor ! readDataRequest
       expectMsgPF() { case ZkResponseProtocol.OperationError(readDataRequest, _) => () }
       actor ! ZkRequestProtocol.Stop()
@@ -118,9 +117,8 @@ class ZooKeeprAvailableTest extends TestBase {
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
       expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
       actor ! readDataRequest
-      expectMsg(ZkResponseProtocol.Data(readDataRequest, None))
+      expectMsg(ZkResponseProtocol.Data(readDataRequest, None, None))
       actor ! ZkRequestProtocol.Stop()
       expectNoMsg
     }
@@ -132,7 +130,6 @@ class ZooKeeprAvailableTest extends TestBase {
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
       expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
       actor ! writeDataRequest
       expectMsgPF() { case ZkResponseProtocol.OperationError(writeDataRequest, _) => () }
       actor ! ZkRequestProtocol.Stop()
@@ -153,25 +150,24 @@ class ZooKeeprAvailableTest extends TestBase {
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
       expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
 
       actor ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
 
       actor ! readDataRequest
-      expectMsg( ZkResponseProtocol.Data(readDataRequest, data) )
+      expectMsgPF() { case ZkResponseProtocol.Data(readDataRequest, data, _) => () }
 
       actor ! writeNoneDataRequest
       expectMsgPF() { case ZkResponseProtocol.Written(writeNoneDataRequest, _) => () }
 
       actor ! readDataRequest
-      expectMsg( ZkResponseProtocol.Data(readDataRequest, None) )
+      expectMsgPF() { case ZkResponseProtocol.Data(_, None, _) => () }
 
       actor ! writeSomeDataRequest
       expectMsgPF() { case ZkResponseProtocol.Written(writeNoneDataRequest, _) => () }
 
       actor ! readDataRequest
-      expectMsg( ZkResponseProtocol.Data(readDataRequest, data) )
+      expectMsgPF() { case ZkResponseProtocol.Data(readDataRequest, data, _) => () }
 
       actor ! ZkRequestProtocol.Stop()
       expectNoMsg
@@ -194,13 +190,12 @@ class ZooKeeprAvailableTest extends TestBase {
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
       expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
 
       actor ! metricsRequest
       expectMsgPF() {
         case ZkResponseProtocol.Metrics(metricsRequest, metrics) =>
-          metrics.getOrElse(ZkClientMetricNames.ChildChangeSubscribersCount.name, 0) shouldBe 0
-          metrics.getOrElse(ZkClientMetricNames.DataChangeSubscribersCount.name, 0) shouldBe 0
+          metrics.getOrElse(ZkClientMetricNames.ChildChangePathsObservedCount.name, 0) shouldBe 0
+          metrics.getOrElse(ZkClientMetricNames.DataChangePathsObservedCount.name, 0) shouldBe 0
       }
 
       actor ! subscribeChild
@@ -211,8 +206,8 @@ class ZooKeeprAvailableTest extends TestBase {
       actor ! metricsRequest
       expectMsgPF() {
         case ZkResponseProtocol.Metrics(metricsRequest, metrics) =>
-          metrics.getOrElse(ZkClientMetricNames.ChildChangeSubscribersCount.name, 0) shouldBe 1
-          metrics.getOrElse(ZkClientMetricNames.DataChangeSubscribersCount.name, 0) shouldBe 1
+          metrics.getOrElse(ZkClientMetricNames.ChildChangePathsObservedCount.name, 0) shouldBe 1
+          metrics.getOrElse(ZkClientMetricNames.DataChangePathsObservedCount.name, 0) shouldBe 1
       }
 
       actor ! unsubscribeChild
@@ -223,8 +218,8 @@ class ZooKeeprAvailableTest extends TestBase {
       actor ! metricsRequest
       expectMsgPF() {
         case ZkResponseProtocol.Metrics(metricsRequest, metrics) =>
-          metrics.getOrElse(ZkClientMetricNames.ChildChangeSubscribersCount.name, 0) shouldBe 0
-          metrics.getOrElse(ZkClientMetricNames.DataChangeSubscribersCount.name, 0) shouldBe 0
+          metrics.getOrElse(ZkClientMetricNames.ChildChangePathsObservedCount.name, 0) shouldBe 0
+          metrics.getOrElse(ZkClientMetricNames.DataChangePathsObservedCount.name, 0) shouldBe 0
       }
 
       actor ! ZkRequestProtocol.Stop()
@@ -233,7 +228,6 @@ class ZooKeeprAvailableTest extends TestBase {
 
     "forward child change events to a subscriber" in {
 
-      var watcherSubscribed = false
       @volatile
       var receivedChangeUpdates = 0
 
@@ -242,30 +236,23 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
       val createRequest = ZkRequestProtocol.CreatePersistent(path, data)
+      val subscribeRequest = ZkRequestProtocol.SubscribeChildChanges(path)
 
-      val actor = system.actorOf(Props(new ZkClientActor))
-
-      val watcher = TestActorRef(new Actor {
-        def receive = {
-          case "subscribe" =>
-            actor ! ZkRequestProtocol.SubscribeChildChanges(path)
-          case ZkResponseProtocol.SubscriptionSuccess(_) =>
-            watcherSubscribed = true
-          case ZkResponseProtocol.ChildChange(_) =>
-            receivedChangeUpdates = receivedChangeUpdates + 1
-          case anyOther =>
-            fail(s"Unexpected message $anyOther received.")
+      implicit val materializer = ActorMaterializer()
+      val source = Source.actorPublisher[ZkClientStreamProtocol.StreamResponse](Props(new ZkClientActor))
+      val actor = Flow[ZkClientStreamProtocol.StreamResponse].to(Sink.foreach { message =>
+        message match {
+          case m: ZkClientStreamProtocol.ChildChange => receivedChangeUpdates = receivedChangeUpdates + 1
+          case m: ZkClientStreamProtocol.DataChange  => fail(s"Unexpected data change event: $m")
+          case m: ZkClientStreamProtocol.StateChange =>
         }
-      })
+      }).runWith(source)
 
       actor ! connectRequest
       expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
 
-      watcher ! "subscribe"
-      eventually {
-        watcherSubscribed shouldBe true
-      }
+      actor ! subscribeRequest
+      expectMsg(ZkResponseProtocol.SubscriptionSuccess(subscribeRequest))
 
       actor ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
@@ -281,11 +268,10 @@ class ZooKeeprAvailableTest extends TestBase {
 
     "forward data change events to a subscriber" in {
 
-      var watcherSubscribed = false
       @volatile
       var receivedDataChangeUpdates = 0
 
-      val numberOfUpdates = 2
+      val numberOfUpdates = 10
 
       val path = s"/test-node-forward-data-change"
       val dataInitial = Some("with test data")
@@ -293,40 +279,29 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
       val createRequest = ZkRequestProtocol.CreatePersistent(path, dataInitial)
+      val subscribeRequest = ZkRequestProtocol.SubscribeDataChanges(path)
 
-      val actor = system.actorOf(Props(new ZkClientActor))
-
-      val watcher = TestActorRef(new Actor {
-        def receive = {
-          case "subscribe" =>
-            actor ! ZkRequestProtocol.SubscribeDataChanges(path)
-          case ZkResponseProtocol.SubscriptionSuccess(_) =>
-            watcherSubscribed = true
-          case ZkResponseProtocol.DataChange(_) =>
-            // FIXME: this isn't really logical, there should be no need to resubsribe unless there's a specific
-            // reason for it.
-            // However, if there's a reason, why are we allowed to register multiple subscribers?
-            actor ! ZkRequestProtocol.SubscribeDataChanges(path)
+      implicit val materializer = ActorMaterializer()
+      val source = Source.actorPublisher[ZkClientStreamProtocol.StreamResponse](Props(new ZkClientActor))
+      val actor = Flow[ZkClientStreamProtocol.StreamResponse].to(Sink.foreach { message =>
+        message match {
+          case m: ZkClientStreamProtocol.ChildChange => fail(s"Unexpected child change event: $m")
+          case m: ZkClientStreamProtocol.DataChange  =>
             receivedDataChangeUpdates = receivedDataChangeUpdates + 1
-          case anyOther =>
-            fail(s"Unexpected message $anyOther received.")
+          case m: ZkClientStreamProtocol.StateChange =>
         }
-      })
+      }).runWith(source)
 
       actor ! connectRequest
       expectMsg( ZkResponseProtocol.Connected(connectRequest) )
-      expectMsgPF() { case ZkResponseProtocol.StateChange(_) => () }
 
       actor ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
 
-      watcher ! "subscribe"
-      eventually {
-        watcherSubscribed shouldBe true
-      }
+      actor ! subscribeRequest
+      expectMsg(ZkResponseProtocol.SubscriptionSuccess(subscribeRequest))
 
       for (i <- 0 until numberOfUpdates) {
-        Thread.sleep(1000) // FIXME: part of the problem above...
         actor ! ZkRequestProtocol.WriteData(path, dataUpdated)
         expectMsgPF() { case ZkResponseProtocol.Written(writeNoneDataRequest, _) => () }
       }
@@ -365,7 +340,7 @@ class NoZooKeeperTest extends TestBase {
         }
         def receive = {
           case "run test" =>
-            val connectRequest = ZkRequestProtocol.Connect(connectionTimeout = 1 second, connectionAttempts = 2)
+            val connectRequest = ZkRequestProtocol.Connect(sessionTimeout = 1 second, connectionAttempts = 2)
             val actor = this.context.actorOf(Props(new ZkClientActor))
             actor ! connectRequest
             context.watch(actor)
