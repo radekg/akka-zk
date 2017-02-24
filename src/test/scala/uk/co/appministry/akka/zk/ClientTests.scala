@@ -1,10 +1,13 @@
 package uk.co.appministry.akka.zk
 
+import java.util
+
 import akka.actor.SupervisorStrategy.Stop
 import akka.actor.{Actor, OneForOneStrategy, Props, SupervisorStrategy}
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, Sink, Source}
 import akka.testkit.TestActorRef
+import scala.collection.JavaConverters._
 
 class ZooKeeprAvailableTest extends TestBase {
 
@@ -71,7 +74,46 @@ class ZooKeeprAvailableTest extends TestBase {
     }
 
     "correctly handle persistent sequential ZooKeeper nodes" in {
-      // TODO: implement
+      val parent = "/"
+      val testNode = "persistent-sequential-node-test"
+      val path = s"$parent$testNode"
+      val nodesCreated = new util.ArrayList[String]()
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequest = ZkRequestProtocol.CreatePersistent(path, None, sequential = true)
+      val getChildrenRequest = ZkRequestProtocol.GetChildren(parent)
+
+      val actor1 = system.actorOf(Props(new ZkClientActor))
+      actor1 ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actor1 ! createRequest
+      expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => {
+        nodesCreated.add(result.replace(parent, ""))
+        ()
+      } }
+
+      val actor2 = system.actorOf(Props(new ZkClientActor))
+      actor2 ! connectRequest
+      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      actor2 ! createRequest
+      expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => {
+        nodesCreated.add(result.replace(parent, ""))
+        ()
+      } }
+
+      actor1 ! getChildrenRequest
+      expectMsg( ZkResponseProtocol.Children(getChildrenRequest, nodesCreated.asScala.toList ++ List("zookeeper")) )
+
+      nodesCreated.asScala.toList.foreach { node =>
+        val deleteRequest = ZkRequestProtocol.Delete(s"$parent$node")
+        actor1 ! deleteRequest
+        expectMsg( ZkResponseProtocol.Deleted(deleteRequest) )
+      }
+
+      actor1 ! ZkRequestProtocol.Stop()
+      expectNoMsg
+      actor2 ! ZkRequestProtocol.Stop()
+      expectNoMsg
     }
 
     "correctly handle ephemeral non-sequential ZooKeeper nodes" in {
