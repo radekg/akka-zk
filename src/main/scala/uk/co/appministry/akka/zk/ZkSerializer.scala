@@ -39,6 +39,9 @@ case class SimpleSerializer() extends ZkSerializer {
     * @return an object
     */
   override def deserialize(bytes: Array[Byte]): Any = {
+    if (bytes == null) {
+      return null
+    }
     try {
       val inputStream = new ObjectInputStream(new ByteArrayInputStream(bytes))
       return inputStream.readObject()
@@ -53,6 +56,9 @@ case class SimpleSerializer() extends ZkSerializer {
     * @return a byte array
     */
   override def serialize(serializable: Any): Array[Byte] = {
+    if (serializable == null) {
+      return null
+    }
     try {
       val byteArrayOutputStream = new ByteArrayOutputStream()
       val outputStream = new ObjectOutputStream(byteArrayOutputStream)
