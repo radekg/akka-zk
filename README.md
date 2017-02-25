@@ -1,4 +1,4 @@
-# akka ZK
+# akka-zk
 
 Reactive akka ZooKeeper client.
 
@@ -17,8 +17,6 @@ Reactive akka ZooKeeper client.
 ## Examples
 
 ### Creating the client
-
-The `akka-zk` ZooKeeper client uses `akka streams` for delivering watch notifications. It is possible to create the client as a regular actor:
 
 ```scala
 val actorSystem = ActorSystem("examples")
@@ -60,6 +58,8 @@ runner ! "connect"
 ```
 
 ### Subscribing to and unsubscribing from data / children changes
+
+The `akka-zk` ZooKeeper client uses [reactive streams](https://github.com/reactive-streams/reactive-streams-jvm) for delivering watch notifications.
 
 ZooKeeper client emits three types of events related to ZooKeeper state changes:
 
