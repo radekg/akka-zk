@@ -8,6 +8,7 @@ import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 import org.scalatest.concurrent.Eventually
 import org.scalatest.time.{Millis, Seconds, Span}
 import uk.co.appministry.akka.zk.utils.FreePort
+import scala.concurrent.duration._
 
 import scala.util.Try
 
@@ -20,6 +21,8 @@ class TestBase extends  TestKit(ActorSystem("testing")) with ImplicitSender
   override implicit val patienceConfig = PatienceConfig(timeout = scaled(Span(20, Seconds)), interval = scaled(Span(100, Millis)))
 
   var zookeeper: TestingServer = _
+
+  val defaultConnectedMsgWait = 10 seconds
 
   override def beforeAll {
     super.beforeAll()

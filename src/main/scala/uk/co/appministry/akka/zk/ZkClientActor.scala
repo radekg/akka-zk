@@ -400,6 +400,12 @@ object ZkResponseProtocol {
     extends Response
 
   /**
+    * Emitted to the parent when connect or reconnect failed, right before failing the actor.
+    * @param request original [[ZkRequestProtocol.Connect]] request
+    */
+  final case class Dead(val request: ZkRequestProtocol.Connect) extends Response
+
+  /**
     * Issued to the parent of the ZkClient when the [[ZkRequestProtocol.Connect]] has not been issued yet.
     */
   final case class Disconnected() extends Response
@@ -508,32 +514,42 @@ object ZkInternalProtocol {
   private[zk] sealed trait Internal
 
   /**
+    * The actor will stop.
+    */
+  private[zk] final case class Terminate() extends Internal
+
+  /**
     * Client watcher connection report.
     */
-  private[zk] final case class ZkConnectionSuccessful()
+  private[zk] final case class ZkConnectionSuccessful() extends Internal
+
+  /**
+    * Client watcher connection lost report.
+    */
+  private[zk] final case class ZkConnectionLost() extends Internal
 
   /**
     * ZooKeeper client failed to connect within the deadline.
     */
-  private[zk] final case class ZkInitialConnectionDeadline()
+  private[zk] final case class ZkInitialConnectionDeadline() extends Internal
 
   /**
     * A ZooKeeper state change event is ready for processing.
     * @param event the state event
     */
-  private[zk] final case class ZkProcessStateChange(val event: WatchedEventMeta)
+  private[zk] final case class ZkProcessStateChange(val event: WatchedEventMeta) extends Internal
 
   /**
     * A ZooKeeper child change event is ready for processing.
     * @param event the data or child event
     */
-  private[zk] final case class ZkProcessChildChange(val event: WatchedEventMeta)
+  private[zk] final case class ZkProcessChildChange(val event: WatchedEventMeta) extends Internal
 
   /**
     * A ZooKeeper node data change event is ready for processing.
     * @param event the data or child event
     */
-  private[zk] final case class ZkProcessDataChange(val event: WatchedEventMeta)
+  private[zk] final case class ZkProcessDataChange(val event: WatchedEventMeta) extends Internal
 }
 
 /**
@@ -607,33 +623,39 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
         case Right(error) => sender ! error
       }
 
+    case ZkInternalProtocol.ZkProcessStateChange(event) =>
+      streamMaybeProduce(ZkClientStreamProtocol.StateChange(event))
+
     case anyOther =>
-      log.warning(s"Unexpected message in awaitingConnection: $anyOther.")
-      sender ! ZkResponseProtocol.Disconnected
+      if (sender != self) {
+        log.warning(s"Unexpected message in connect: $anyOther.")
+        sender ! ZkResponseProtocol.Disconnected
+      }
   }
 
   def awaitingConnection(state: ZkClientState): Receive = {
+
+    case ZkInternalProtocol.Terminate() =>
+      throw new ZkClientConnectionFailedException()
+
     case ZkInternalProtocol.ZkInitialConnectionDeadline() =>
-      withMaybeConnectRequest(state) { connectRequest =>
-        if (state.currentAttempt < connectRequest.connectionAttempts) {
-          state.connection.map { conn =>
-            Try {
-              conn.close()
-            } recover {
-              case e: Exception => log.error(s"Error while closing the client: $e")
+      withMaybeRequestor(state) { requestor =>
+        withMaybeConnectRequest(state) { connectRequest =>
+          if (state.currentAttempt < connectRequest.connectionAttempts) {
+            val nextState = state.copy(currentAttempt = state.currentAttempt+1)
+            reconnect(nextState, connectRequest)
+          } else {
+            log.error("All connection requests failed. Stopping.")
+            requestor ! ZkResponseProtocol.Dead(connectRequest)
+            context.system.scheduler.scheduleOnce(100 milliseconds) {
+              self ! ZkInternalProtocol.Terminate()
             }
           }
-          val nextState = state.copy(currentAttempt = state.currentAttempt+1)
-          become(connect, nextState)
-          context.system.scheduler.scheduleOnce(100 milliseconds) {
-            log.debug(s"Reconnecting...")
-            self ! connectRequest
-          }
-        } else {
-          log.error("All connection requests failed. Stopping.")
-          throw new ZkClientConnectionFailedException()
         }
       }
+
+    case ZkInternalProtocol.ZkProcessStateChange(event) =>
+      streamMaybeProduce(ZkClientStreamProtocol.StateChange(event))
 
     case ZkRequestProtocol.Stop() =>
       log.debug("Stop requested...")
@@ -666,12 +688,20 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
   }
 
   def connected(state: ZkClientState): Receive = {
+
     case ZkRequestProtocol.Connect(_, _, _, _, _, _) =>
       withMaybeConnectRequest(state) { connectRequest =>
         sender ! ZkResponseProtocol.Connected(connectRequest)
       }
 
-    case ZkInternalProtocol.ZkInitialConnectionDeadline => // ignore, we are connected
+    case ZkInternalProtocol.ZkConnectionLost() =>
+      withMaybeConnectRequest(state) { connectRequest =>
+        log.error("ZooKeeper connection lost. Attempting reconnecting...")
+        val nextState = state.copy(currentAttempt = 1)
+        reconnect(nextState, connectRequest)
+      }
+
+    case ZkInternalProtocol.ZkInitialConnectionDeadline() => // ignore, we are connected
 
     case ZkInternalProtocol.ZkProcessStateChange(event) =>
       streamMaybeProduce(ZkClientStreamProtocol.StateChange(event))
@@ -922,6 +952,21 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
   }
 
   // -- INTERNAL API:
+
+  private def reconnect(state: ZkClientState, connectRequest: ZkRequestProtocol.Connect): Unit = {
+    state.connection.map { conn =>
+      Try {
+        conn.close()
+      } recover {
+        case e: Exception => log.error(s"Error while closing the client: $e")
+      }
+    }
+    become(connect, state)
+    context.system.scheduler.scheduleOnce(100 milliseconds) {
+      log.debug(s"Reconnecting...")
+      self ! connectRequest
+    }
+  }
 
   private def streamMaybeProduce(data: ZkClientStreamProtocol.StreamResponse): Unit = {
     if (isActive && totalDemand > 0) {

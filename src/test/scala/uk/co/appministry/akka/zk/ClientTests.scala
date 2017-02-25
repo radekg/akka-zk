@@ -2,11 +2,9 @@ package uk.co.appministry.akka.zk
 
 import java.util
 
-import akka.actor.SupervisorStrategy.Stop
-import akka.actor.{Actor, OneForOneStrategy, Props, SupervisorStrategy}
+import akka.actor.Props
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, Sink, Source}
-import akka.testkit.TestActorRef
 import org.apache.zookeeper.ZooDefs.OpCode
 import org.apache.zookeeper._
 import org.apache.zookeeper.data.ACL
@@ -44,7 +42,7 @@ class ZooKeeprAvailableTest extends TestBase {
       val actor = system.actorOf(Props(new ZkClientActor))
       // connect:
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       // ZooKeeper should be clean:
       actor ! countChildrenRequest
       expectMsg( ZkResponseProtocol.ChildrenCount(countChildrenRequest, 1) )
@@ -89,7 +87,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor1 = system.actorOf(Props(new ZkClientActor))
       actor1 ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor1 ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => {
         nodesCreated.add(result.replace(parent, ""))
@@ -98,7 +96,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor2 = system.actorOf(Props(new ZkClientActor))
       actor2 ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor2 ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => {
         nodesCreated.add(result.replace(parent, ""))
@@ -134,7 +132,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor ! countChildrenRequest
       expectMsg( ZkResponseProtocol.ChildrenCount(countChildrenRequest, 1) )
       actor ! createRequest
@@ -146,7 +144,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actorVerifier = system.actorOf(Props(new ZkClientActor))
       actorVerifier ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actorVerifier ! nodeExistsRequest
       expectMsg( ZkResponseProtocol.Existence(nodeExistsRequest, PathExistenceStatus.DoesNotExist) )
       actorVerifier ! ZkRequestProtocol.Stop()
@@ -165,7 +163,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor1 = system.actorOf(Props(new ZkClientActor))
       actor1 ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor1 ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => {
         nodesCreated.add(result.replace(parent, ""))
@@ -174,7 +172,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor2 = system.actorOf(Props(new ZkClientActor))
       actor2 ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor2 ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => {
         nodesCreated.add(result.replace(parent, ""))
@@ -197,7 +195,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actorVerifier = system.actorOf(Props(new ZkClientActor))
       actorVerifier ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actorVerifier ! getChildrenRequest
       expectMsg( ZkResponseProtocol.Children(getChildrenRequest, List("zookeeper")) )
       actorVerifier ! ZkRequestProtocol.Stop()
@@ -219,7 +217,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
       actor ! aclRequest
@@ -250,7 +248,7 @@ class ZooKeeprAvailableTest extends TestBase {
       val readDataRequest = ZkRequestProtocol.ReadData(path)
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor ! readDataRequest
       expectMsgPF() { case ZkResponseProtocol.OperationError(readDataRequest, _) => () }
       actor ! ZkRequestProtocol.Stop()
@@ -263,7 +261,7 @@ class ZooKeeprAvailableTest extends TestBase {
       val readDataRequest = ZkRequestProtocol.ReadData(path, noneIfNoPath = true)
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor ! readDataRequest
       expectMsg(ZkResponseProtocol.Data(readDataRequest, None, None))
       actor ! ZkRequestProtocol.Stop()
@@ -276,7 +274,7 @@ class ZooKeeprAvailableTest extends TestBase {
       val writeDataRequest = ZkRequestProtocol.WriteData(path, Some("test data"))
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor ! writeDataRequest
       expectMsgPF() { case ZkResponseProtocol.OperationError(writeDataRequest, _) => () }
       actor ! ZkRequestProtocol.Stop()
@@ -296,7 +294,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
 
       actor ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
@@ -330,7 +328,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor ! multiRequest
       expectMsgPF() { case ZkResponseProtocol.MultiResponse(multiRequest, results) => {
         results.filter { opResult => opResult.getType == OpCode.create }.length shouldBe nodes.length
@@ -350,7 +348,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
       actor ! multiRequest
       expectMsgPF() { case ZkResponseProtocol.OperationError(multiRequest, cause) => {
         cause match {
@@ -382,7 +380,7 @@ class ZooKeeprAvailableTest extends TestBase {
 
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
 
       actor ! metricsRequest
       expectMsgPF() {
@@ -442,7 +440,7 @@ class ZooKeeprAvailableTest extends TestBase {
       }).runWith(source)
 
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
 
       actor ! subscribeRequest
       expectMsg(ZkResponseProtocol.SubscriptionSuccess(subscribeRequest))
@@ -486,7 +484,7 @@ class ZooKeeprAvailableTest extends TestBase {
       }).runWith(source)
 
       actor ! connectRequest
-      expectMsg( ZkResponseProtocol.Connected(connectRequest) )
+      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
 
       actor ! createRequest
       expectMsgPF() { case ZkResponseProtocol.Created(createRequest, result) => () }
@@ -525,46 +523,6 @@ class ZooKeeprAvailableTest extends TestBase {
       // TODO: implement on the operation level
     }
 
-    "gracefully handle connection loss" ignore {
-      // TODO: implement in the client
-    }
-
-  }
-
-}
-
-class NoZooKeeperTest extends TestBase {
-
-  override def beforeAll = {
-    super.beforeAll
-    zookeeper.stop()
-  }
-  override def afterAll = {}
-
-  "Akka ZK" must {
-    "connect and disconnect from the ZooKeeper server" in {
-      import scala.concurrent.duration._
-      @volatile var failedToConnect = false
-      val watcher = TestActorRef(new Actor {
-        override def supervisorStrategy: SupervisorStrategy = OneForOneStrategy() {
-          case f: ZkClientConnectionFailedException =>
-            failedToConnect = true
-            Stop
-          case _ => Stop
-        }
-        def receive = {
-          case "run test" =>
-            val connectRequest = ZkRequestProtocol.Connect(sessionTimeout = 1 second, connectionAttempts = 2)
-            val actor = this.context.actorOf(Props(new ZkClientActor))
-            actor ! connectRequest
-            context.watch(actor)
-        }
-      })
-      watcher ! "run test"
-      eventually {
-        failedToConnect shouldBe true
-      }
-    }
   }
 
 }

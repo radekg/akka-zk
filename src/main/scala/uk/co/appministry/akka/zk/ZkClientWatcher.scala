@@ -46,6 +46,10 @@ trait ZkClientWatcher extends Watcher { this: ZkClientActor =>
       self ! ZkInternalProtocol.ZkConnectionSuccessful()
     }
 
+    if (currentState != event.getState && event.getState == KeeperState.Disconnected) {
+      self ! ZkInternalProtocol.ZkConnectionLost()
+    }
+
     currentState = event.getState
 
     if (meta.stateChanged) {
