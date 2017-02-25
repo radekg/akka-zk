@@ -75,6 +75,11 @@ val system = ActorSystem("examples")
  
 val runner = system.actorOf(Props(new Actor {
   
+  implicit val materializer = ActorMaterializer(
+    ActorMaterializerSettings(system).withInputBuffer(
+      initialSize = 10,
+      maxSize = 64))
+  
   val zkClient = context.system.actorOf(Props(new ZkClientActor))
   
   def receive = {
