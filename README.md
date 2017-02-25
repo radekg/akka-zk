@@ -87,7 +87,7 @@ val runner = system.actorOf(Props(new Actor {
       zkClient ! ZkRequestProtocol.Connect(connectionString = "10.100.0.21:2181",
                                            connectionAttempts = 5,
                                            sessionTimeout = 30 seconds)
-    case ZkResponseProtocol.Connected(request, reactiveStreamsPublisher) =>
+    case ZkResponseProtocol.Connected(request, publisher) =>
       
       // a very simple example:
       Source.fromPublisher[ZkClientStreamProtocol.StreamResponse](publisher).map { message =>
