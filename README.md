@@ -25,21 +25,6 @@ val actorSystem = ActorSystem("examples")
 val zkClient = system.actorOf(Props(new ZkClientActor))
 ```
     
-However, using this method, access to `watch` events will not be possible. To be able to receive these events, streams have to be used:
-
-```scala
-val actorSystem = ActorSystem("examples")
-implicit val materializer = ActorMaterializer()
-val source = Source.actorPublisher[ZkClientStreamProtocol.StreamResponse](Props(new ZkClientActor))
-val zkClient = Flow[ZkClientStreamProtocol.StreamResponse].to(Sink.foreach { message =>
-  message match {
-    case m: ZkClientStreamProtocol.ChildChange =>
-    case m: ZkClientStreamProtocol.DataChange  =>
-    case m: ZkClientStreamProtocol.StateChange =>
-  }
-}).runWith(source)
-```
-    
 ### Client configuration
 
 The client does not have any special configuration needs. All configuration is passed with `ZkRequestProtocol.Connect` message.
@@ -66,7 +51,7 @@ val runner = system.actorOf(Props(new Actor {
       zkClient ! ZkRequestProtocol.Connect(connectionString = "10.100.0.21:2181",
                                            connectionAttempts = 5,
                                            sessionTimeout = 30 seconds)
-    case ZkResponseProtocol.Connected(request) =>
+    case ZkResponseProtocol.Connected(request, reactiveStreamsPublisher) =>
       // zkClient is now ready for work
   }
   
@@ -82,22 +67,43 @@ ZooKeeper client emits three types of events related to ZooKeeper state changes:
 - `ZkClientStreamingResponse.ChildChange(event: WatchedEventMeta)`: this is a znode children change event
 - `ZkClientStreamingResponse.DataChange(event: WatchedEventMeta)`: this is a znode data change event
 
-To receive these events, create the client using the `akka streams Source` method.
-
 The `StateChange` events are automatically delivered, there is no subscription required. However, the `ChildChange` and `DataChange` events 
 are per `path` thus requiring an explicit subscription. To initialize a subscription:
 
 ```scala
+val system = ActorSystem("examples")
+ 
+val runner = system.actorOf(Props(new Actor {
+  
+  val zkClient = context.system.actorOf(Props(new ZkClientActor))
+  
   def receive = {
+    case "connect" =>
+      zkClient ! ZkRequestProtocol.Connect(connectionString = "10.100.0.21:2181",
+                                           connectionAttempts = 5,
+                                           sessionTimeout = 30 seconds)
+    case ZkResponseProtocol.Connected(request, reactiveStreamsPublisher) =>
+      
+      // a very simple example:
+      Source.fromPublisher[ZkClientStreamProtocol.StreamResponse](publisher).map { message =>
+        message match {
+          case m: ZkClientStreamProtocol.ChildChange => // children change event
+          case m: ZkClientStreamProtocol.DataChange  => // data change event
+          case m: ZkClientStreamProtocol.StateChange => // state change event
+        }
+      }.runWith(Sink.ignore)
+      
+      self ! "subscribe"
+      
     case "subscribe" =>
       zkClient ! ZkRequestProtocol.SubscribeChildChanges("/some/zookeeper/path")
       zkClient ! ZkRequestProtocol.SubscribeDataChanges("/some/other/zookeeper/path")
     case ZkResponseProtocol.SubscriptionSuccess(request) =>
       request match {
         case _: ZkRequestProtocol.SubscribeChildChanges =>
-          // from now on, the child changes for the requested path will be streaming via the Flow
+          // from now on, the child changes for the requested path will be streaming via the Source
         case _: ZkRequestProtocol.SubscribeDataChanges =>
-          // from now on, the data changes for the requested path will be streaming via the Flow
+          // from now on, the data changes for the requested path will be streaming via the Source
       }
     case "unsubscribe" =>
       zkClient ! ZkRequestProtocol.UnsubscribeChildChanges("/some/zookeeper/path")
@@ -110,6 +116,9 @@ are per `path` thus requiring an explicit subscription. To initialize a subscrip
           // data change for the requested path will stop streaming via the Flow
       }
   }
+}))
+
+runner ! "connect"
 ```
 
 ### Handling underlying ZooKeeper errors
