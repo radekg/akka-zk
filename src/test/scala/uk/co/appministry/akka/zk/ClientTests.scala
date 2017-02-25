@@ -508,6 +508,15 @@ class ZooKeeprAvailableTest extends TestBase {
 
     }
 
+    "attempt connecting to a session with password, if these details given" in {
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString,
+        sessionId = Some(System.currentTimeMillis()),
+        sessionPassword = Some(Array.empty[Byte]))
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectNoMsg // the session does not exist on the server so no message should come back
+    }
+
     "handle ACL with auth info" ignore {
       // TODO: find a way to implement this
     }

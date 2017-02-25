@@ -107,6 +107,9 @@ object ZkClientProtocolDefaults {
   val ConnectionString = "localhost:2181"
   val ConnectionAttempts = 2
   val SessionTimeout = 30 seconds
+  val SessionId: Option[Long] = None
+  val SessionPassword: Option[Array[Byte]] = None
+  val CanBeReadOnly = false
 }
 
 /**
@@ -160,10 +163,20 @@ object ZkRequestProtocol {
     *                         "/app/a/foo/bar" (from the server perspective).
     * @param connectionAttempts how many times to retry a failed connect attempt
     * @param sessionTimeout session timeout
+    * @param sessionId specific session id to use if reconnecting
+    * @param sessionPassword password for this session
+    * @param canBeReadOnly whether the created client is allowed to go to read-only mode in case of partitioning.
+    *                      Read-only mode basically means that if the client can't find any majority servers but
+    *                      there's partitioned server it could reach, it connects to one in read-only mode, i.e. read
+    *                      requests are allowed while write requests are not. It continues seeking for majority in
+    *                      the background.
     */
   final case class Connect(val connectionString: String = ZkClientProtocolDefaults.ConnectionString,
                            val connectionAttempts: Int = ZkClientProtocolDefaults.ConnectionAttempts,
-                           val sessionTimeout: FiniteDuration = ZkClientProtocolDefaults.SessionTimeout) extends Request
+                           val sessionTimeout: FiniteDuration = ZkClientProtocolDefaults.SessionTimeout,
+                           val sessionId: Option[Long] = ZkClientProtocolDefaults.SessionId,
+                           val sessionPassword: Option[Array[Byte]] = ZkClientProtocolDefaults.SessionPassword,
+                           val canBeReadOnly: Boolean = ZkClientProtocolDefaults.CanBeReadOnly) extends Request
 
   /**
     * Return the number the children of the node of the given path.
@@ -557,9 +570,24 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
   def receive = connect(ZkClientState(1, None, None))
 
   def connect(state: ZkClientState): Receive = {
-    case req @ ZkRequestProtocol.Connect(connectionString, connectionAttempts, sessionTimeout) =>
+    case req @ ZkRequestProtocol.Connect(connectionString,
+                                         connectionAttempts,
+                                         sessionTimeout,
+                                         maybeSessionId,
+                                         maybeSessionPassword,
+                                         canBeReadOnly) =>
+
       log.debug(s"Creating a ZooKeeper client for: ${connectionString}. Attempt ${state.currentAttempt} or $connectionAttempts...")
-      val zk = new ZooKeeper(connectionString, sessionTimeout.length.toInt, this)
+
+      val zk = (maybeSessionId, maybeSessionPassword) match {
+        case (Some(id), Some(password)) =>
+          log.debug(s"Creating a ZooKeeper client for session: $id with password.")
+          new ZooKeeper(connectionString, sessionTimeout.length.toInt, this, id, password, canBeReadOnly)
+        case _ =>
+          log.debug(s"Creating a ZooKeeper client. No session id, password or both.")
+          new ZooKeeper(connectionString, sessionTimeout.length.toInt, this)
+      }
+
       context.system.scheduler.scheduleOnce(sessionTimeout) {
         self ! ZkInternalProtocol.ZkInitialConnectionDeadline()
       }
@@ -621,7 +649,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
         }
       }
 
-    case ZkRequestProtocol.Connect(_, _, _) =>
+    case ZkRequestProtocol.Connect(_, _, _, _, _, _) =>
       sender ! ZkResponseProtocol.AwaitingConnection
 
     case req @ ZkRequestProtocol.IsSaslEnabled() =>
@@ -631,12 +659,14 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
       }
 
     case anyOther =>
-      log.debug(s"Received an unexpected message: $anyOther.")
-      sender ! ZkResponseProtocol.AwaitingConnection
+      if (sender != self) {
+        log.debug(s"Received an unexpected message: $anyOther.")
+        sender ! ZkResponseProtocol.AwaitingConnection
+      }
   }
 
   def connected(state: ZkClientState): Receive = {
-    case ZkRequestProtocol.Connect(_, _, _) =>
+    case ZkRequestProtocol.Connect(_, _, _, _, _, _) =>
       withMaybeConnectRequest(state) { connectRequest =>
         sender ! ZkResponseProtocol.Connected(connectRequest)
       }
@@ -757,11 +787,12 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
 
     case req @ ZkRequestProtocol.WriteData(path, maybeData, expectedVersion) =>
       withMaybeConnection(state) { connection =>
-        val data = maybeData match {
-          case Some(data) => state.serializer.serialize(data)
-          case None => null
-        }
-        zkWriteData(connection, state.serializer, path, data, expectedVersion) match {
+        zkWriteData(
+          connection,
+          state.serializer,
+          path,
+          state.serializer.serialize(maybeData.getOrElse(null.asInstanceOf[Array[Byte]])),
+          expectedVersion) match {
           case Success(v) =>
             sender ! ZkResponseProtocol.Written(req, v)
             if (isPathWatchable(state, path)) { // reinstall the watch, if necessary
@@ -930,11 +961,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
   }
 
   private def zkCreate(connection: ZooKeeper, serializer: ZkSerializer, path: String, maybeData: Option[Any], acls: List[ACL], mode: CreateMode): Try[String] = {
-    val data = maybeData match {
-      case Some(value) => serializer.serialize(value)
-      case None => null
-    }
-    Try { connection.create(path, data, acls.asJava, mode) }
+    Try { connection.create(path, serializer.serialize(maybeData), acls.asJava, mode) }
   }
 
   private def zkGetChildren(connection: ZooKeeper, state: ZkClientState, path: String): Try[java.util.List[String]] = {
