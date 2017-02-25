@@ -581,10 +581,10 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
 
       val zk = (maybeSessionId, maybeSessionPassword) match {
         case (Some(id), Some(password)) =>
-          log.debug(s"Creating a ZooKeeper client for session: $id with password.")
+          log.debug(s"Client for session: $id with password.")
           new ZooKeeper(connectionString, sessionTimeout.length.toInt, this, id, password, canBeReadOnly)
         case _ =>
-          log.debug(s"Creating a ZooKeeper client. No session id, password or both.")
+          log.debug(s"Client with no session id, password or both.")
           new ZooKeeper(connectionString, sessionTimeout.length.toInt, this)
       }
 
