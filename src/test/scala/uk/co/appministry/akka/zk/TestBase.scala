@@ -4,13 +4,12 @@ import akka.actor.ActorSystem
 import akka.testkit.{ImplicitSender, TestKit}
 import com.typesafe.config.ConfigFactory
 import org.apache.curator.test.TestingServer
-import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 import org.scalatest.concurrent.Eventually
 import org.scalatest.time.{Millis, Seconds, Span}
+import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 import uk.co.appministry.akka.zk.utils.FreePort
-import scala.concurrent.duration._
 
-import scala.util.Try
+import scala.concurrent.duration._
 
 class TestBase extends  TestKit(ActorSystem("testing")) with ImplicitSender
   with WordSpecLike
