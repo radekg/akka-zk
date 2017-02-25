@@ -6,10 +6,10 @@ import java.util.{List => JList}
 import javax.security.auth.login.Configuration
 
 import akka.actor.{Actor, ActorLogging, ActorRef}
-import akka.stream.actor.ActorPublisher
 import com.codahale.metrics.MetricRegistry
 import org.apache.zookeeper._
 import org.apache.zookeeper.data.{ACL, Stat}
+import org.reactivestreams.{Publisher, Subscriber}
 
 import scala.collection.JavaConverters._
 import scala.concurrent.duration.{FiniteDuration, _}
@@ -373,8 +373,9 @@ object ZkResponseProtocol {
   /**
     * Issued to the ZkClient parent when the client successfully connects.
     * @param request the original request
+    * @param publisher stream publisher for [[org.apache.zookeeper.WatchedEvent]] subscribed events
     */
-  final case class Connected(val request: ZkRequestProtocol.Connect) extends Response
+  final case class Connected(val request: ZkRequestProtocol.Connect, val publisher: Publisher[ZkClientStreamProtocol.StreamResponse]) extends Response
 
   /**
     * [[ZkRequestProtocol.CreatePersistent]] and [[ZkRequestProtocol.CreateEphemeral]] response.
@@ -474,6 +475,17 @@ object ZkResponseProtocol {
 }
 
 /**
+  * Internal Reactive Streams publisher.
+  * @param ref actor to forward the subscriber to
+  * @tparam _ [[ZkClientStreamProtocol.StreamResponse]]
+  */
+private[zk] final case class ZkClientPublisher[_ >: ZkClientStreamProtocol.StreamResponse](val ref: ActorRef) extends Publisher[ZkClientStreamProtocol.StreamResponse] {
+  override def subscribe(sub: Subscriber[_ >: ZkClientStreamProtocol.StreamResponse]): Unit = {
+    ref ! ZkInternalProtocol.Subscribe(sub)
+  }
+}
+
+/**
   * ZooKeeper client streaming protocol.
   */
 object ZkClientStreamProtocol {
@@ -512,6 +524,12 @@ object ZkInternalProtocol {
     * Internal protocol message.
     */
   private[zk] sealed trait Internal
+
+  /**
+    * Internal subscribe message.
+    * @param subscriber a subscriber
+    */
+  private [zk] final case class Subscribe(val subscriber: Subscriber[_ >: ZkClientStreamProtocol.StreamResponse]) extends Internal
 
   /**
     * The actor will stop.
@@ -565,6 +583,7 @@ case class ZkClientState(val currentAttempt: Int,
                          val requestor: Option[ActorRef],
                          val connection: Option[ZooKeeper] = None,
                          val serializer: ZkSerializer = new SimpleSerializer,
+                         val subscriber: Option[Subscriber[_ >: ZkClientStreamProtocol.StreamResponse]] = None,
                          val dataSubscriptions: JList[String] = new util.ArrayList[String](),
                          val childSubscriptions: JList[String] = new util.ArrayList[String]())
 
@@ -578,10 +597,12 @@ case class ZkClientState(val currentAttempt: Int,
   *   TODO: Intead of using ActorPublisher, consider using the [[org.reactivestreams.Publisher]].<br/>
   *   According to the Akka docs, ActorPublisher may be removed in the future.
   */
-class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.StreamResponse] with ActorLogging with ZkClientWatcher {
+class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
 
   import scala.concurrent.ExecutionContext.Implicits.global
   import scala.concurrent.duration._
+
+  val publisher = new ZkClientPublisher[ZkClientStreamProtocol.StreamResponse](self)
 
   def receive = connect(ZkClientState(1, None, None))
 
@@ -624,7 +645,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
       }
 
     case ZkInternalProtocol.ZkProcessStateChange(event) =>
-      streamMaybeProduce(ZkClientStreamProtocol.StateChange(event))
+      streamMaybeProduce(state, ZkClientStreamProtocol.StateChange(event))
 
     case anyOther =>
       if (sender != self) {
@@ -655,7 +676,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
       }
 
     case ZkInternalProtocol.ZkProcessStateChange(event) =>
-      streamMaybeProduce(ZkClientStreamProtocol.StateChange(event))
+      streamMaybeProduce(state, ZkClientStreamProtocol.StateChange(event))
 
     case ZkRequestProtocol.Stop() =>
       log.debug("Stop requested...")
@@ -666,8 +687,8 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
       withMaybeConnectRequest(state) { connectRequest =>
         withMaybeRequestor(state) { requestor =>
           log.debug("ZooKeeper client connected.")
-          requestor ! ZkResponseProtocol.Connected(connectRequest)
           become(connected, state)
+          requestor ! ZkResponseProtocol.Connected(connectRequest, publisher)
         }
       }
 
@@ -689,10 +710,9 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
 
   def connected(state: ZkClientState): Receive = {
 
-    case ZkRequestProtocol.Connect(_, _, _, _, _, _) =>
-      withMaybeConnectRequest(state) { connectRequest =>
-        sender ! ZkResponseProtocol.Connected(connectRequest)
-      }
+    case ZkInternalProtocol.Subscribe(subscriber) =>
+      log.debug("Subscriber subscribed to the publisher.")
+      become(connected, state.copy(subscriber = Some(subscriber)))
 
     case ZkInternalProtocol.ZkConnectionLost() =>
       withMaybeConnectRequest(state) { connectRequest =>
@@ -704,13 +724,13 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
     case ZkInternalProtocol.ZkInitialConnectionDeadline() => // ignore, we are connected
 
     case ZkInternalProtocol.ZkProcessStateChange(event) =>
-      streamMaybeProduce(ZkClientStreamProtocol.StateChange(event))
+      streamMaybeProduce(state, ZkClientStreamProtocol.StateChange(event))
 
     case ZkInternalProtocol.ZkProcessDataChange(event) =>
       Option(event.underlying.getPath) match {
         case Some(path) =>
           if (state.dataSubscriptions.contains(path)) {
-            streamMaybeProduce(ZkClientStreamProtocol.DataChange(event))
+            streamMaybeProduce(state, ZkClientStreamProtocol.DataChange(event))
           }
         case None =>
           log.warning(s"Expected the path to be not null when processing data change event: $event.")
@@ -720,7 +740,7 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
       Option(event.underlying.getPath) match {
         case Some(path) =>
           if ( state.childSubscriptions.contains(path) ) {
-            streamMaybeProduce(ZkClientStreamProtocol.ChildChange(event))
+            streamMaybeProduce(state, ZkClientStreamProtocol.ChildChange(event))
           }
         case None =>
           log.warning(s"Expected the path to be not null when processing child change event: $event.")
@@ -948,6 +968,9 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
           case e => log.warning(s"There was an exception while stopping the ZooKeeper connection: ${e.getMessage}.")
         }
       }
+      data.subscriber.map { subscriber =>
+        subscriber.onComplete()
+      }
     }
   }
 
@@ -968,9 +991,9 @@ class ZkClientActor extends Actor with ActorPublisher[ZkClientStreamProtocol.Str
     }
   }
 
-  private def streamMaybeProduce(data: ZkClientStreamProtocol.StreamResponse): Unit = {
-    if (isActive && totalDemand > 0) {
-      onNext(data)
+  private def streamMaybeProduce(state: ZkClientState, data: ZkClientStreamProtocol.StreamResponse): Unit = {
+    state.subscriber.map { subscriber =>
+      subscriber.onNext(data)
     }
   }
 

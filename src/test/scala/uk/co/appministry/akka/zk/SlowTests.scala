@@ -1,9 +1,10 @@
 package uk.co.appministry.akka.zk
 
-import akka.actor.{Actor, OneForOneStrategy, Props, SupervisorStrategy}
 import akka.actor.SupervisorStrategy.Stop
+import akka.actor.{Actor, OneForOneStrategy, Props, SupervisorStrategy}
 import akka.testkit.TestActorRef
 import org.scalatest.time.{Second, Seconds, Span}
+
 import scala.concurrent.duration._
 
 class ConnectionLossTest extends TestBase {
@@ -20,7 +21,7 @@ class ConnectionLossTest extends TestBase {
         connectionAttempts = 2)
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
-      expectMsg( defaultConnectedMsgWait, ZkResponseProtocol.Connected(connectRequest) )
+      expectMsgPF(defaultConnectedMsgWait) { case ZkResponseProtocol.Connected(connectRequest, _) => () }
       zookeeper.stop()
       eventually {
         expectMsg(ZkResponseProtocol.Dead(connectRequest))
