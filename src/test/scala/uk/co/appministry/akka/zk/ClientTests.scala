@@ -638,10 +638,6 @@ class ZooKeeprAvailableTest extends TestBase {
       // TODO: find a way to implement this
     }
 
-    "handle recursive create and delete" ignore {
-      // TODO: implement on the operation level
-    }
-
   }
 
 }
