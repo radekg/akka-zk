@@ -12,7 +12,6 @@ import org.apache.zookeeper._
 import org.apache.zookeeper.data.{ACL, Stat}
 import org.reactivestreams.{Publisher, Subscriber}
 
-import scala.annotation.tailrec
 import scala.collection.JavaConverters._
 import scala.concurrent.duration.{FiniteDuration, _}
 import scala.concurrent.{Future, Promise}
@@ -230,8 +229,14 @@ object ZkRequestProtocol {
 
   /**
     * Delete a node with a given path.
+    *
+    * <p>
+    *   <strong>Recursive delete notes:</strong><br/>
+    *   Recursive delete is partially synchronous. Children collection is <em>synchronous</em> while the removal uses
+    *   actual <em>asynchronous</em> calls. Recursive delete only checks the version of the top node to be deleted,
+    *   <em>any child will be removed regardless of the version</em>.
     * @param path the given path for the node
-    * @param version the expected node version
+    * @param version the expected node version for the top node to remove
     */
   final case class Delete(val path: String, val version: Int = -1, val recursive: Boolean = false) extends Request
 
@@ -908,13 +913,37 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
     case req @ ZkRequestProtocol.Delete(path, version, recursive) =>
       withMaybeConnection(state) { connection =>
         val origSender = sender
-        zkDelete(connection, path, version).onComplete {
-          case Success(_) =>
-            metricZnodesDeletedCount.inc()
-            origSender ! ZkResponseProtocol.Deleted(req)
-          case Failure(e) =>
-            metricErrorsCount.inc()
-            origSender ! ZkResponseProtocol.OperationError(req, e)
+        if (!recursive) {
+          zkDelete(connection, path, version).onComplete {
+            case Success(_) =>
+              metricZnodesDeletedCount.inc()
+              origSender ! ZkResponseProtocol.Deleted(req)
+            case Failure(e) =>
+              metricErrorsCount.inc()
+              origSender ! ZkResponseProtocol.OperationError(req, e)
+          }
+        } else {
+
+          zkReadData(connection, state, path).onComplete {
+            case Success(v) =>
+              if (v._2.getVersion == version || version == -1) {
+
+                val collector = new util.ArrayList[String]()
+                zkGetChildrenSync(connection, state, path, collector)
+                collector.add(path)
+                val removables = collector.asScala.toList.sorted.reverse
+                zkDeletePaths(req, connection, removables, version, None) { response =>
+                  origSender ! response
+                }
+
+              } else {
+                origSender ! ZkResponseProtocol.OperationError(
+                  req,
+                  KeeperException.create(KeeperException.Code.BADVERSION, path))
+              }
+            case Failure(e) => origSender ! ZkResponseProtocol.OperationError(req, e)
+          }
+
         }
       }
 
@@ -1104,27 +1133,44 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       case path :: next :: rest =>
         zkCreate(connection, serializer, path, None, acls, intermediateMode).onComplete {
           case Success(v) =>
-            zkCreatePaths(
-              request, connection, serializer, List(next) ++ rest, maybeData,
-              acls, mode, intermediateMode, Some(ZkResponseProtocol.Created(request, v)))(callback)
+            // avoid recursion
+            context.system.scheduler.scheduleOnce(Duration.Zero) {
+              zkCreatePaths(
+                request, connection, serializer, List(next) ++ rest, maybeData,
+                acls, mode, intermediateMode, Some(ZkResponseProtocol.Created(request, v)))(callback)
+            }
           case Failure(e) =>
-            zkCreatePaths(
-              request, connection, serializer, List(next) ++ rest, maybeData,
-              acls, mode, intermediateMode, Some(ZkResponseProtocol.OperationError(request, e)))(callback)
+            // avoid recursion
+            context.system.scheduler.scheduleOnce(Duration.Zero) {
+              zkCreatePaths(
+                request, connection, serializer, List(next) ++ rest, maybeData,
+                acls, mode, intermediateMode, Some(ZkResponseProtocol.OperationError(request, e)))(callback)
+            }
         }
       case path :: rest =>
         zkCreate(connection, serializer, path, maybeData, acls, mode).onComplete {
           case Success(v) =>
-            zkCreatePaths(
-              request, connection, serializer, rest, maybeData,
-              acls, mode, intermediateMode, Some(ZkResponseProtocol.Created(request, v)))(callback)
+            // avoid recursion
+            context.system.scheduler.scheduleOnce(Duration.Zero) {
+              zkCreatePaths(
+                request, connection, serializer, rest, maybeData,
+                acls, mode, intermediateMode, Some(ZkResponseProtocol.Created(request, v)))(callback)
+            }
           case Failure(e) =>
-            zkCreatePaths(
-              request, connection, serializer, rest, maybeData,
-              acls, mode, intermediateMode, Some(ZkResponseProtocol.OperationError(request, e)))(callback)
+            // avoid recursion
+            context.system.scheduler.scheduleOnce(Duration.Zero) {
+              zkCreatePaths(
+                request, connection, serializer, rest, maybeData,
+                acls, mode, intermediateMode, Some(ZkResponseProtocol.OperationError(request, e)))(callback)
+            }
         }
       case Nil =>
-        callback.apply(lastResult.get)
+        callback.apply(lastResult.getOrElse(
+          ZkResponseProtocol.OperationError(
+            request,
+            ZkClientInvalidStateException("Undefined result while executing recursive create. State unknown.")
+          )
+        ))
     }
   }
 
@@ -1140,6 +1186,52 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       }
     }, None)
     p.future
+  }
+
+  private def zkDeletePaths(request: ZkRequestProtocol.Delete,
+                            connection: ZooKeeper,
+                            paths: List[String],
+                            topNodeVersion: Int,
+                            lastResult: Option[ZkResponseProtocol.Response])(callback: (ZkResponseProtocol.Response) => Unit): Unit = {
+    paths match {
+      case path:: next :: tail =>
+        zkDelete(connection, path, -1).onComplete {
+          case Success(_) =>
+            // avoid recursion
+            context.system.scheduler.scheduleOnce(Duration.Zero) {
+              zkDeletePaths(request, connection, List(next) ++ tail, topNodeVersion,
+                Some(ZkResponseProtocol.Deleted(request)))(callback)
+            }
+          case Failure(e) =>
+            // avoid recursion
+            context.system.scheduler.scheduleOnce(Duration.Zero) {
+              zkDeletePaths(request, connection, List(next) ++ tail, topNodeVersion,
+                Some(ZkResponseProtocol.OperationError(request, e)))(callback)
+            }
+        }
+      case path :: tail =>
+        zkDelete(connection, path, topNodeVersion).onComplete {
+          case Success(_) =>
+            // avoid recursion
+            context.system.scheduler.scheduleOnce(Duration.Zero) {
+              zkDeletePaths(request, connection, tail, topNodeVersion,
+                Some(ZkResponseProtocol.Deleted(request)))(callback)
+            }
+          case Failure(e) =>
+            // avoid recursion
+            context.system.scheduler.scheduleOnce(Duration.Zero) {
+              zkDeletePaths(request, connection, tail, topNodeVersion,
+                Some(ZkResponseProtocol.OperationError(request, e)))(callback)
+            }
+        }
+      case Nil =>
+        callback.apply(lastResult.getOrElse(
+          ZkResponseProtocol.OperationError(
+            request,
+            ZkClientInvalidStateException("Undefined result while executing recursive delete. State unknown.")
+          )
+        ))
+    }
   }
 
   private def zkDelete(connection: ZooKeeper, path: String, version: Int): Future[Unit] = {
@@ -1178,6 +1270,18 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       }
     }, None)
     p.future
+  }
+
+  private def zkGetChildrenSync(connection: ZooKeeper, state: ZkClientState, path: String, collector: util.List[String]): Unit = {
+    try {
+      connection.getChildren(path, isPathWatchable(state, path)).asScala.toList.foreach { child =>
+        val discoveredPath = s"$path/$child"
+        zkGetChildrenSync(connection, state, discoveredPath, collector)
+        collector.add(discoveredPath)
+      }
+    } catch {
+      case e: Throwable => log.warning(s"Problem while gathering children: $e")
+    }
   }
 
   private def zkGetChildren(connection: ZooKeeper, state: ZkClientState, path: String): Future[Tuple2[java.util.List[String], Stat]] = {

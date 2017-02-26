@@ -529,13 +529,17 @@ class ZooKeeprAvailableTest extends TestBase {
 
     "create and delete persistent nodes recursively" in {
 
-      val basePath = "/persistent-recursive"
+      val topPath = "/persistent"
+      val basePath = s"$topPath/recursive"
       val path = s"$basePath/create/and/delete"
 
       val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
       val createRequest = ZkRequestProtocol.CreatePersistent(path, None, createParents = true)
       val deleteRequest = ZkRequestProtocol.Delete(basePath, recursive = true)
-      val existsRequest = ZkRequestProtocol.IsExisting(path)
+
+      val existsRequestFull = ZkRequestProtocol.IsExisting(path)
+      val existsRequestBase = ZkRequestProtocol.IsExisting(basePath)
+      val existsRequestTop = ZkRequestProtocol.IsExisting(topPath)
 
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
@@ -544,17 +548,17 @@ class ZooKeeprAvailableTest extends TestBase {
       actor ! createRequest
       expectMsg( ZkResponseProtocol.Created(createRequest, path) )
 
-      actor ! existsRequest
-      expectMsg( ZkResponseProtocol.Existence(existsRequest, PathExistenceStatus.Exists) )
+      actor ! existsRequestFull
+      expectMsg( ZkResponseProtocol.Existence(existsRequestFull, PathExistenceStatus.Exists) )
 
-      /*
-      // TODO: recursive delete
       actor ! deleteRequest
       expectMsg( ZkResponseProtocol.Deleted(deleteRequest) )
 
-      actor ! existsRequest
-      expectMsg( ZkResponseProtocol.Existence(existsRequest, PathExistenceStatus.DoesNotExist) )
-      */
+      actor ! existsRequestBase
+      expectMsg( ZkResponseProtocol.Existence(existsRequestBase, PathExistenceStatus.DoesNotExist) )
+
+      actor ! existsRequestTop
+      expectMsg( ZkResponseProtocol.Existence(existsRequestTop, PathExistenceStatus.Exists) )
 
       actor ! ZkRequestProtocol.Stop()
       expectNoMsg
@@ -563,13 +567,17 @@ class ZooKeeprAvailableTest extends TestBase {
 
     "create and delete ephemeral nodes recursively" in {
 
-      val basePath = "/ephemeral-recursive"
+      val topPath = "/ephemeral"
+      val basePath = s"$topPath/recursive"
       val path = s"$basePath/create/and/delete"
 
       val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
       val createRequest = ZkRequestProtocol.CreateEphemeral(path, None, createParents = true)
       val deleteRequest = ZkRequestProtocol.Delete(basePath, recursive = true)
-      val existsRequest = ZkRequestProtocol.IsExisting(path)
+
+      val existsRequestFull = ZkRequestProtocol.IsExisting(path)
+      val existsRequestBase = ZkRequestProtocol.IsExisting(basePath)
+      val existsRequestTop = ZkRequestProtocol.IsExisting(topPath)
 
       val actor = system.actorOf(Props(new ZkClientActor))
       actor ! connectRequest
@@ -578,17 +586,17 @@ class ZooKeeprAvailableTest extends TestBase {
       actor ! createRequest
       expectMsg( ZkResponseProtocol.Created(createRequest, path) )
 
-      actor ! existsRequest
-      expectMsg( ZkResponseProtocol.Existence(existsRequest, PathExistenceStatus.Exists) )
+      actor ! existsRequestFull
+      expectMsg( ZkResponseProtocol.Existence(existsRequestFull, PathExistenceStatus.Exists) )
 
-      /*
-      // TODO: recursive delete
       actor ! deleteRequest
       expectMsg( ZkResponseProtocol.Deleted(deleteRequest) )
 
-      actor ! existsRequest
-      expectMsg( ZkResponseProtocol.Existence(existsRequest, PathExistenceStatus.DoesNotExist) )
-      */
+      actor ! existsRequestBase
+      expectMsg( ZkResponseProtocol.Existence(existsRequestBase, PathExistenceStatus.DoesNotExist) )
+
+      actor ! existsRequestTop
+      expectMsg( ZkResponseProtocol.Existence(existsRequestTop, PathExistenceStatus.Exists) )
 
       actor ! ZkRequestProtocol.Stop()
       expectNoMsg
