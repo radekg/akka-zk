@@ -20,7 +20,7 @@ What's in it:
 ### Dependencies
 
     libraryDependencies ++= Seq(
-      "uk.co.appministry" %% "akka-zk" % "0.1.0-snapshot"
+      "uk.co.appministry" %% "akka-zk" % "0.1.0"
     )
 
 ## Examples
