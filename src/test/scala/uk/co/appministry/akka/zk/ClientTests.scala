@@ -527,6 +527,105 @@ class ZooKeeprAvailableTest extends TestBase {
       expectNoMsg // the session does not exist on the server so no message should come back
     }
 
+    "create and delete persistent nodes recursively" in {
+
+      val basePath = "/persistent-recursive"
+      val path = s"$basePath/create/and/delete"
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequest = ZkRequestProtocol.CreatePersistent(path, None, createParents = true)
+      val deleteRequest = ZkRequestProtocol.Delete(basePath, recursive = true)
+      val existsRequest = ZkRequestProtocol.IsExisting(path)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsgPF(defaultConnectedMsgWait) { case ZkResponseProtocol.Connected(connectRequest, _) => () }
+
+      actor ! createRequest
+      expectMsg( ZkResponseProtocol.Created(createRequest, path) )
+
+      actor ! existsRequest
+      expectMsg( ZkResponseProtocol.Existence(existsRequest, PathExistenceStatus.Exists) )
+
+      /*
+      // TODO: recursive delete
+      actor ! deleteRequest
+      expectMsg( ZkResponseProtocol.Deleted(deleteRequest) )
+
+      actor ! existsRequest
+      expectMsg( ZkResponseProtocol.Existence(existsRequest, PathExistenceStatus.DoesNotExist) )
+      */
+
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
+
+    }
+
+    "create and delete ephemeral nodes recursively" in {
+
+      val basePath = "/ephemeral-recursive"
+      val path = s"$basePath/create/and/delete"
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequest = ZkRequestProtocol.CreateEphemeral(path, None, createParents = true)
+      val deleteRequest = ZkRequestProtocol.Delete(basePath, recursive = true)
+      val existsRequest = ZkRequestProtocol.IsExisting(path)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsgPF(defaultConnectedMsgWait) { case ZkResponseProtocol.Connected(connectRequest, _) => () }
+
+      actor ! createRequest
+      expectMsg( ZkResponseProtocol.Created(createRequest, path) )
+
+      actor ! existsRequest
+      expectMsg( ZkResponseProtocol.Existence(existsRequest, PathExistenceStatus.Exists) )
+
+      /*
+      // TODO: recursive delete
+      actor ! deleteRequest
+      expectMsg( ZkResponseProtocol.Deleted(deleteRequest) )
+
+      actor ! existsRequest
+      expectMsg( ZkResponseProtocol.Existence(existsRequest, PathExistenceStatus.DoesNotExist) )
+      */
+
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
+
+    }
+
+    "fail while creating children in ephemeral parents" in {
+      val basePath = "/ephemeral-parent"
+      val nestedPath = s"$basePath/another-ephemeral/recursive"
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequestParent = ZkRequestProtocol.CreateEphemeral(basePath, None)
+      val createRequestNested = ZkRequestProtocol.CreateEphemeral(nestedPath, None, createParents = true)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsgPF(defaultConnectedMsgWait) { case ZkResponseProtocol.Connected(connectRequest, _) => () }
+
+      actor ! createRequestParent
+      expectMsg( ZkResponseProtocol.Created(createRequestParent, basePath) )
+
+      actor ! createRequestNested
+      expectMsgPF() { case ZkResponseProtocol.OperationError(createRequestNested, _) => ()}
+
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
+
+      val nodeExistsRequest = ZkRequestProtocol.IsExisting(basePath)
+      val actorVerifier = system.actorOf(Props(new ZkClientActor))
+      actorVerifier ! connectRequest
+      expectMsgPF(defaultConnectedMsgWait) { case ZkResponseProtocol.Connected(connectRequest, _) => () }
+      actorVerifier ! nodeExistsRequest
+      expectMsg( ZkResponseProtocol.Existence(nodeExistsRequest, PathExistenceStatus.DoesNotExist) )
+      actorVerifier ! ZkRequestProtocol.Stop()
+      expectNoMsg
+    }
+
     "handle ACL with auth info" ignore {
       // TODO: find a way to implement this
     }

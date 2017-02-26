@@ -12,6 +12,7 @@ import org.apache.zookeeper._
 import org.apache.zookeeper.data.{ACL, Stat}
 import org.reactivestreams.{Publisher, Subscriber}
 
+import scala.annotation.tailrec
 import scala.collection.JavaConverters._
 import scala.concurrent.duration.{FiniteDuration, _}
 import scala.concurrent.{Future, Promise}
@@ -198,11 +199,14 @@ object ZkRequestProtocol {
     * @param data the initial data for the node
     * @param acl the acl for the node
     * @param sequential should the node be sequential
+    * @param createParents create parent nodes, if necessary; any parent node created will be a permanent node as
+    *                      ephemeral nodes can't have children
     */
   final case class CreateEphemeral(val path: String,
                                    val data: Option[Any] = None,
                                    val acl: List[ACL] = ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala.toList,
-                                   val sequential: Boolean = false) extends CreateRequest
+                                   val sequential: Boolean = false,
+                                   val createParents: Boolean = false) extends CreateRequest
 
   /**
     * Create a persistent node with the given path.
@@ -210,11 +214,13 @@ object ZkRequestProtocol {
     * @param data the initial data for the node
     * @param acl the acl for the node
     * @param sequential should the node be sequential
+    * @param createParents create parent nodes, if necessary
     */
   final case class CreatePersistent(val path: String,
                                     val data: Option[Any] = None,
                                     val acl: List[ACL] = ZooDefs.Ids.OPEN_ACL_UNSAFE.asScala.toList,
-                                    val sequential: Boolean = false) extends CreateRequest
+                                    val sequential: Boolean = false,
+                                    val createParents: Boolean = false) extends CreateRequest
 
   /**
     * Get the timestamp of when the node has been created.
@@ -227,7 +233,7 @@ object ZkRequestProtocol {
     * @param path the given path for the node
     * @param version the expected node version
     */
-  final case class Delete(val path: String, val version: Int = -1) extends Request
+  final case class Delete(val path: String, val version: Int = -1, val recursive: Boolean = false) extends Request
 
   /**
     * Return the ACL and stat of the node of the given path.
@@ -776,31 +782,26 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
         }
       }
 
-    case req @ ZkRequestProtocol.CreatePersistent(path, maybeData, acls, sequential) =>
+    case req @ ZkRequestProtocol.CreatePersistent(path, maybeData, acls, sequential, createParents) =>
       withMaybeConnection(state) { connection =>
-        val mode = if (sequential) CreateMode.PERSISTENT_SEQUENTIAL else CreateMode.PERSISTENT
+        val baseMode = CreateMode.PERSISTENT
+        val mode = if (sequential) CreateMode.PERSISTENT_SEQUENTIAL else baseMode
         val origSender = sender
-        zkCreate(connection, state.serializer, path, maybeData, acls, mode).onComplete {
-          case Success(v) =>
-            metricZnodesCreatedCount.inc()
-            origSender ! ZkResponseProtocol.Created(req, v)
-          case Failure(e) =>
-            metricErrorsCount.inc()
-            origSender ! ZkResponseProtocol.OperationError(req, e)
+        val paths = if (createParents) subPaths(path) else List(path)
+        zkCreatePaths(req, connection, state.serializer, paths, maybeData, acls, mode, baseMode, None) { result =>
+          origSender ! result
         }
       }
 
-    case req @ ZkRequestProtocol.CreateEphemeral(path, maybeData, acls, sequential) =>
+    case req @ ZkRequestProtocol.CreateEphemeral(path, maybeData, acls, sequential, createParents) =>
       withMaybeConnection(state) { connection =>
         val mode = if (sequential) CreateMode.EPHEMERAL_SEQUENTIAL else CreateMode.EPHEMERAL
         val origSender = sender
-        zkCreate(connection, state.serializer, path, maybeData, acls, mode).onComplete {
-          case Success(v) =>
-            metricZnodesCreatedCount.inc()
-            origSender ! ZkResponseProtocol.Created(req, v)
-          case Failure(e) =>
-            metricErrorsCount.inc()
-            origSender ! ZkResponseProtocol.OperationError(req, e)
+        val paths = if (createParents) subPaths(path) else List(path)
+        // an ephemeral node can't have children
+        // all parent nodes need to be persistent
+        zkCreatePaths(req, connection, state.serializer, paths, maybeData, acls, mode, CreateMode.PERSISTENT, None) { result =>
+          origSender ! result
         }
       }
 
@@ -904,7 +905,7 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
         }
       }
 
-    case req @ ZkRequestProtocol.Delete(path, version) =>
+    case req @ ZkRequestProtocol.Delete(path, version, recursive) =>
       withMaybeConnection(state) { connection =>
         val origSender = sender
         zkDelete(connection, path, version).onComplete {
@@ -947,11 +948,12 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
 
     case req @ ZkRequestProtocol.Multi(ops) =>
       withMaybeConnection(state) { connection =>
-        Try { connection.multi(ops.asJava) } match {
-          case Success(v) => sender ! ZkResponseProtocol.MultiResponse(req, v.asScala.toList)
+        val origSender = sender
+        zkMulti(connection, ops.asJava).onComplete {
+          case Success(v) => origSender ! ZkResponseProtocol.MultiResponse(req, v.asScala.toList)
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -1089,6 +1091,43 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
     }
   }
 
+  private def zkCreatePaths(request: ZkRequestProtocol.CreateRequest,
+                            connection: ZooKeeper,
+                            serializer: ZkSerializer,
+                            paths: List[String],
+                            maybeData: Option[Any],
+                            acls: List[ACL],
+                            mode: CreateMode,
+                            intermediateMode: CreateMode,
+                            lastResult: Option[ZkResponseProtocol.Response])(callback: (ZkResponseProtocol.Response) => Unit): Unit = {
+    paths match {
+      case path :: next :: rest =>
+        zkCreate(connection, serializer, path, None, acls, intermediateMode).onComplete {
+          case Success(v) =>
+            zkCreatePaths(
+              request, connection, serializer, List(next) ++ rest, maybeData,
+              acls, mode, intermediateMode, Some(ZkResponseProtocol.Created(request, v)))(callback)
+          case Failure(e) =>
+            zkCreatePaths(
+              request, connection, serializer, List(next) ++ rest, maybeData,
+              acls, mode, intermediateMode, Some(ZkResponseProtocol.OperationError(request, e)))(callback)
+        }
+      case path :: rest =>
+        zkCreate(connection, serializer, path, maybeData, acls, mode).onComplete {
+          case Success(v) =>
+            zkCreatePaths(
+              request, connection, serializer, rest, maybeData,
+              acls, mode, intermediateMode, Some(ZkResponseProtocol.Created(request, v)))(callback)
+          case Failure(e) =>
+            zkCreatePaths(
+              request, connection, serializer, rest, maybeData,
+              acls, mode, intermediateMode, Some(ZkResponseProtocol.OperationError(request, e)))(callback)
+        }
+      case Nil =>
+        callback.apply(lastResult.get)
+    }
+  }
+
   private def zkCreate(connection: ZooKeeper, serializer: ZkSerializer, path: String, maybeData: Option[Any], acls: List[ACL], mode: CreateMode): Future[String] = {
     val p = Promise[String]()
     connection.create(path, serializer.serialize(maybeData), acls.asJava, mode, new StringCallback {
@@ -1147,6 +1186,20 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       override def processResult(rc: Int, path: String, ctx: scala.Any, children: JList[String], stat: Stat) = {
         if (rc == KeeperException.Code.OK.intValue()) {
           p.success((children, stat))
+        } else {
+          p.failure(KeeperException.create(KeeperException.Code.get(rc), path))
+        }
+      }
+    }, None)
+    p.future
+  }
+
+  private def zkMulti(connection: ZooKeeper, ops: java.util.List[Op]): Future[java.util.List[OpResult]] = {
+    val p = Promise[java.util.List[OpResult]]()
+    connection.multi(ops, new MultiCallback {
+      override def processResult(rc: Int, path: String, ctx: scala.Any, opResults: JList[OpResult]) = {
+        if (rc == KeeperException.Code.OK.intValue()) {
+          p.success(opResults)
         } else {
           p.failure(KeeperException.create(KeeperException.Code.get(rc), path))
         }
@@ -1218,6 +1271,20 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
     state.connection match {
       case Some(connection) => f.apply(connection)
       case None             => throw ZkClientInvalidStateException(ZkClientMessages.ConnectionMissing)
+    }
+  }
+
+  private def subPaths(path: String): List[String] = {
+    path.split("/").drop(1).foldLeft(List.empty[String]) { (accum, item) =>
+      if (item == "") {
+        accum ++ List.empty[String]
+      } else {
+        if (accum.length == 0) {
+          accum ++ List(s"/$item")
+        } else {
+          accum ++ List(s"${accum.last}/$item")
+        }
+      }
     }
   }
 
