@@ -527,12 +527,115 @@ class ZooKeeprAvailableTest extends TestBase {
       expectNoMsg // the session does not exist on the server so no message should come back
     }
 
-    "handle ACL with auth info" ignore {
-      // TODO: find a way to implement this
+    "create and delete persistent nodes recursively" in {
+
+      val topPath = "/persistent"
+      val basePath = s"$topPath/recursive"
+      val path = s"$basePath/create/and/delete"
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequest = ZkRequestProtocol.CreatePersistent(path, None, createParents = true)
+      val deleteRequest = ZkRequestProtocol.Delete(basePath, recursive = true)
+
+      val existsRequestFull = ZkRequestProtocol.IsExisting(path)
+      val existsRequestBase = ZkRequestProtocol.IsExisting(basePath)
+      val existsRequestTop = ZkRequestProtocol.IsExisting(topPath)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsgPF(defaultConnectedMsgWait) { case ZkResponseProtocol.Connected(connectRequest, _) => () }
+
+      actor ! createRequest
+      expectMsg( ZkResponseProtocol.Created(createRequest, path) )
+
+      actor ! existsRequestFull
+      expectMsg( ZkResponseProtocol.Existence(existsRequestFull, PathExistenceStatus.Exists) )
+
+      actor ! deleteRequest
+      expectMsg( ZkResponseProtocol.Deleted(deleteRequest) )
+
+      actor ! existsRequestBase
+      expectMsg( ZkResponseProtocol.Existence(existsRequestBase, PathExistenceStatus.DoesNotExist) )
+
+      actor ! existsRequestTop
+      expectMsg( ZkResponseProtocol.Existence(existsRequestTop, PathExistenceStatus.Exists) )
+
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
+
     }
 
-    "handle recursive create and delete" ignore {
-      // TODO: implement on the operation level
+    "create and delete ephemeral nodes recursively" in {
+
+      val topPath = "/ephemeral"
+      val basePath = s"$topPath/recursive"
+      val path = s"$basePath/create/and/delete"
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequest = ZkRequestProtocol.CreateEphemeral(path, None, createParents = true)
+      val deleteRequest = ZkRequestProtocol.Delete(basePath, recursive = true)
+
+      val existsRequestFull = ZkRequestProtocol.IsExisting(path)
+      val existsRequestBase = ZkRequestProtocol.IsExisting(basePath)
+      val existsRequestTop = ZkRequestProtocol.IsExisting(topPath)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsgPF(defaultConnectedMsgWait) { case ZkResponseProtocol.Connected(connectRequest, _) => () }
+
+      actor ! createRequest
+      expectMsg( ZkResponseProtocol.Created(createRequest, path) )
+
+      actor ! existsRequestFull
+      expectMsg( ZkResponseProtocol.Existence(existsRequestFull, PathExistenceStatus.Exists) )
+
+      actor ! deleteRequest
+      expectMsg( ZkResponseProtocol.Deleted(deleteRequest) )
+
+      actor ! existsRequestBase
+      expectMsg( ZkResponseProtocol.Existence(existsRequestBase, PathExistenceStatus.DoesNotExist) )
+
+      actor ! existsRequestTop
+      expectMsg( ZkResponseProtocol.Existence(existsRequestTop, PathExistenceStatus.Exists) )
+
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
+
+    }
+
+    "fail while creating children in ephemeral parents" in {
+      val basePath = "/ephemeral-parent"
+      val nestedPath = s"$basePath/another-ephemeral/recursive"
+
+      val connectRequest = ZkRequestProtocol.Connect(zookeeper.getConnectString)
+      val createRequestParent = ZkRequestProtocol.CreateEphemeral(basePath, None)
+      val createRequestNested = ZkRequestProtocol.CreateEphemeral(nestedPath, None, createParents = true)
+
+      val actor = system.actorOf(Props(new ZkClientActor))
+      actor ! connectRequest
+      expectMsgPF(defaultConnectedMsgWait) { case ZkResponseProtocol.Connected(connectRequest, _) => () }
+
+      actor ! createRequestParent
+      expectMsg( ZkResponseProtocol.Created(createRequestParent, basePath) )
+
+      actor ! createRequestNested
+      expectMsgPF() { case ZkResponseProtocol.OperationError(createRequestNested, _) => ()}
+
+      actor ! ZkRequestProtocol.Stop()
+      expectNoMsg
+
+      val nodeExistsRequest = ZkRequestProtocol.IsExisting(basePath)
+      val actorVerifier = system.actorOf(Props(new ZkClientActor))
+      actorVerifier ! connectRequest
+      expectMsgPF(defaultConnectedMsgWait) { case ZkResponseProtocol.Connected(connectRequest, _) => () }
+      actorVerifier ! nodeExistsRequest
+      expectMsg( ZkResponseProtocol.Existence(nodeExistsRequest, PathExistenceStatus.DoesNotExist) )
+      actorVerifier ! ZkRequestProtocol.Stop()
+      expectNoMsg
+    }
+
+    "handle ACL with auth info" ignore {
+      // TODO: find a way to implement this
     }
 
   }
