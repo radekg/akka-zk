@@ -117,8 +117,14 @@ object ZkClientProtocolDefaults {
   */
 object ZkClientMetricNames {
   sealed abstract class MetricName(val name: String)
-  case object ChildChangePathsObservedCount extends MetricName("child-change-paths-observed-count")
-  case object DataChangePathsObservedCount extends MetricName("data-change-paths-observed-count")
+  final case object ChildChangePathsObservedCount extends MetricName("child-change-paths-observed")
+  final case object DataChangePathsObservedCount extends MetricName("data-change-paths-observed")
+  final case object StreamMessagesProducedCount extends MetricName("stream-messages-produced")
+  final case object ZnodesCreatedCount extends MetricName("znodes-created")
+  final case object ZnodesDeletedCount extends MetricName("znodes-deleted")
+  final case object ErrorsCount extends MetricName("errors")
+  final case object BytesReadCount extends MetricName("bytes-read")
+  final case object BytesWrittenCount extends MetricName("bytes-written")
 }
 
 /**
@@ -641,7 +647,9 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
     case req @ ZkRequestProtocol.IsSaslEnabled() =>
       zkSasl(req) match {
         case Left(saslResponse) => sender ! saslResponse
-        case Right(error) => sender ! error
+        case Right(error) =>
+          metricErrorsCount.inc()
+          sender ! error
       }
 
     case ZkInternalProtocol.ZkProcessStateChange(event) =>
@@ -698,7 +706,9 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
     case req @ ZkRequestProtocol.IsSaslEnabled() =>
       zkSasl(req) match {
         case Left(saslResponse) => sender ! saslResponse
-        case Right(error) => sender ! error
+        case Right(error) =>
+          metricErrorsCount.inc()
+          sender ! error
       }
 
     case anyOther =>
@@ -758,7 +768,9 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       withMaybeConnection(state) { connection =>
         Try { connection.addAuthInfo(scheme, authInfo) } match {
           case Success(_) => sender ! ZkResponseProtocol.AuthInfoAdded(req)
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -766,8 +778,12 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       withMaybeConnection(state) { connection =>
         val mode = if (sequential) CreateMode.PERSISTENT_SEQUENTIAL else CreateMode.PERSISTENT
         zkCreate(connection, state.serializer, path, maybeData, acls, mode) match {
-          case Success(v) => sender ! ZkResponseProtocol.Created(req, v)
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Success(v) =>
+            metricZnodesCreatedCount.inc()
+            sender ! ZkResponseProtocol.Created(req, v)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -775,8 +791,12 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       withMaybeConnection(state) { connection =>
         val mode = if (sequential) CreateMode.EPHEMERAL_SEQUENTIAL else CreateMode.EPHEMERAL
         zkCreate(connection, state.serializer, path, maybeData, acls, mode) match {
-          case Success(v) => sender ! ZkResponseProtocol.Created(req, v)
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Success(v) =>
+            metricZnodesCreatedCount.inc()
+            sender ! ZkResponseProtocol.Created(req, v)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -788,7 +808,9 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
         }
         zkGetChildren(connection, state, path) match {
           case Success(v) => sender ! ZkResponseProtocol.Children(req, v.asScala.toList.sorted)
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -796,7 +818,9 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       withMaybeConnection(state) { connection =>
         zkGetChildren(connection, state, path) match {
           case Success(v) => sender ! ZkResponseProtocol.ChildrenCount(req, v.size())
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -806,7 +830,9 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
           case Success(v) =>
             val status = if (v) PathExistenceStatus.Exists else PathExistenceStatus.DoesNotExist
             sender ! ZkResponseProtocol.Existence(req, status)
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -816,20 +842,27 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
           case Success(v) =>
             Try {
               val maybeData = Option(state.serializer.deserialize(v._1)) match {
-                case Some(data) => Some(data)
+                case Some(data) =>
+                  metricBytesRead.inc(v._1.length)
+                  Some(data)
                 case None => None
               }
               sender ! ZkResponseProtocol.Data(req, maybeData, Option(v._2))
             }.recover {
-              case e: Throwable => sender ! ZkResponseProtocol.OperationError(req, e)
+              case e: Throwable =>
+                metricErrorsCount.inc()
+                sender ! ZkResponseProtocol.OperationError(req, e)
             }
           case Failure(e) =>
             if (noneIfNoPath) {
               e match {
                 case _: KeeperException.NoNodeException => sender ! ZkResponseProtocol.Data(req, None, None)
-                case _                                  => sender ! ZkResponseProtocol.OperationError(req, e)
+                case _ =>
+                  metricErrorsCount.inc()
+                  sender ! ZkResponseProtocol.OperationError(req, e)
               }
             } else {
+              metricErrorsCount.inc()
               sender ! ZkResponseProtocol.OperationError(req, e)
             }
         }
@@ -841,14 +874,17 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
           connection,
           state.serializer,
           path,
-          state.serializer.serialize(maybeData.getOrElse(null.asInstanceOf[Array[Byte]])),
+          maybeData.getOrElse(null.asInstanceOf[Array[Byte]]),
           expectedVersion) match {
           case Success(v) =>
+            metricBytesWritten.inc(v.getDataLength)
             sender ! ZkResponseProtocol.Written(req, v)
             if (isPathWatchable(state, path)) { // reinstall the watch, if necessary
               zkExists(connection, state, path)
             }
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -856,15 +892,21 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       withMaybeConnection(state) { connection =>
         zkReadData(connection, state, path) match {
           case Success(v) => sender ! ZkResponseProtocol.CreatedAt(req, v._2.getCtime)
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.Delete(path, version) =>
       withMaybeConnection(state) { connection =>
         Try { connection.delete(path, version) } match {
-          case Success(_) =>  sender ! ZkResponseProtocol.Deleted(req)
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Success(_) =>
+            metricZnodesDeletedCount.inc()
+            sender ! ZkResponseProtocol.Deleted(req)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -873,7 +915,9 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
         val stat = new Stat()
         Try { connection.getACL(path, stat) } match {
           case Success(v) => sender ! ZkResponseProtocol.AclData(req, AclEntry(v.asScala.toList, stat))
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -883,9 +927,13 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
           case Success(v) =>
             Try { connection.setACL(path, acl.asJava, v._2.getAversion) } match {
               case Success(_) => sender ! ZkResponseProtocol.AclSet(req)
-              case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+              case Failure(e) =>
+                metricErrorsCount.inc()
+                sender ! ZkResponseProtocol.OperationError(req, e)
             }
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -893,14 +941,18 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       withMaybeConnection(state) { connection =>
         Try { connection.multi(ops.asJava) } match {
           case Success(v) => sender ! ZkResponseProtocol.MultiResponse(req, v.asScala.toList)
-          case Failure(e) => sender ! ZkResponseProtocol.OperationError(req, e)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            sender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.IsSaslEnabled() =>
       zkSasl(req) match {
         case Left(saslResponse) => sender ! saslResponse
-        case Right(error) => sender ! error
+        case Right(error) =>
+          metricErrorsCount.inc()
+          sender ! error
       }
 
     case req @ ZkRequestProtocol.SubscribeChildChanges(path) =>
@@ -994,6 +1046,7 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
   private def streamMaybeProduce(state: ZkClientState, data: ZkClientStreamProtocol.StreamResponse): Unit = {
     state.subscriber.map { subscriber =>
       subscriber.onNext(data)
+      metricStreamMessagesProducedCount.inc()
     }
   }
 
@@ -1078,6 +1131,12 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
   private[zk] val registry = new MetricRegistry
   private[zk] val metricDataChangePathsObservedCount = registry.counter(ZkClientMetricNames.DataChangePathsObservedCount.name)
   private[zk] val metricChildChangPathsObservedCount = registry.counter(ZkClientMetricNames.ChildChangePathsObservedCount.name)
+  private[zk] val metricStreamMessagesProducedCount = registry.counter(ZkClientMetricNames.StreamMessagesProducedCount.name)
+  private[zk] val metricZnodesCreatedCount = registry.counter(ZkClientMetricNames.ZnodesCreatedCount.name)
+  private[zk] val metricZnodesDeletedCount = registry.counter(ZkClientMetricNames.ZnodesDeletedCount.name)
+  private[zk] val metricErrorsCount = registry.counter(ZkClientMetricNames.ErrorsCount.name)
+  private[zk] val metricBytesRead = registry.counter(ZkClientMetricNames.BytesReadCount.name)
+  private[zk] val metricBytesWritten = registry.counter(ZkClientMetricNames.BytesWrittenCount.name)
 
   private[zk] def metricsAsMap(): Map[String, Long] = {
     registry.getCounters.asScala.map { tupple =>
