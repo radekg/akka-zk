@@ -13,8 +13,8 @@ import org.apache.zookeeper.data.{ACL, Stat}
 import org.reactivestreams.{Publisher, Subscriber}
 
 import scala.collection.JavaConverters._
-import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.concurrent.duration.{FiniteDuration, _}
+import scala.concurrent.{Future, Promise}
 import scala.util.{Failure, Success, Try}
 
 /**
