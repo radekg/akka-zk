@@ -7,11 +7,13 @@ import javax.security.auth.login.Configuration
 
 import akka.actor.{Actor, ActorLogging, ActorRef}
 import com.codahale.metrics.MetricRegistry
+import org.apache.zookeeper.AsyncCallback._
 import org.apache.zookeeper._
 import org.apache.zookeeper.data.{ACL, Stat}
 import org.reactivestreams.{Publisher, Subscriber}
 
 import scala.collection.JavaConverters._
+import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.concurrent.duration.{FiniteDuration, _}
 import scala.util.{Failure, Success, Try}
 
@@ -777,68 +779,70 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
     case req @ ZkRequestProtocol.CreatePersistent(path, maybeData, acls, sequential) =>
       withMaybeConnection(state) { connection =>
         val mode = if (sequential) CreateMode.PERSISTENT_SEQUENTIAL else CreateMode.PERSISTENT
-        zkCreate(connection, state.serializer, path, maybeData, acls, mode) match {
+        val origSender = sender
+        zkCreate(connection, state.serializer, path, maybeData, acls, mode).onComplete {
           case Success(v) =>
             metricZnodesCreatedCount.inc()
-            sender ! ZkResponseProtocol.Created(req, v)
+            origSender ! ZkResponseProtocol.Created(req, v)
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.CreateEphemeral(path, maybeData, acls, sequential) =>
       withMaybeConnection(state) { connection =>
         val mode = if (sequential) CreateMode.EPHEMERAL_SEQUENTIAL else CreateMode.EPHEMERAL
-        zkCreate(connection, state.serializer, path, maybeData, acls, mode) match {
+        val origSender = sender
+        zkCreate(connection, state.serializer, path, maybeData, acls, mode).onComplete {
           case Success(v) =>
             metricZnodesCreatedCount.inc()
-            sender ! ZkResponseProtocol.Created(req, v)
+            origSender ! ZkResponseProtocol.Created(req, v)
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.GetChildren(path, maybeWatch) =>
       withMaybeConnection(state) { connection =>
-        val watch = maybeWatch match {
-          case Some(v) => v
-          case None    => isPathWatchable(state, path)
-        }
-        zkGetChildren(connection, state, path) match {
-          case Success(v) => sender ! ZkResponseProtocol.Children(req, v.asScala.toList.sorted)
+        val origSender = sender
+        zkGetChildren(connection, state, path).onComplete {
+          case Success(v) => origSender ! ZkResponseProtocol.Children(req, v._1.asScala.toList.sorted)
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.CountChildren(path) =>
       withMaybeConnection(state) { connection =>
-        zkGetChildren(connection, state, path) match {
-          case Success(v) => sender ! ZkResponseProtocol.ChildrenCount(req, v.size())
+        val origSender = sender
+        zkGetChildren(connection, state, path).onComplete {
+          case Success(v) => origSender ! ZkResponseProtocol.ChildrenCount(req, v._1.size())
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.IsExisting(path) =>
       withMaybeConnection(state) { connection =>
-        zkExists(connection, state, path) match {
+        val origSender = sender
+        zkExists(connection, state, path).onComplete {
           case Success(v) =>
             val status = if (v) PathExistenceStatus.Exists else PathExistenceStatus.DoesNotExist
-            sender ! ZkResponseProtocol.Existence(req, status)
+            origSender ! ZkResponseProtocol.Existence(req, status)
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.ReadData(path, noneIfNoPath) =>
       withMaybeConnection(state) { connection =>
-        zkReadData(connection, state, path) match {
+        val origSender = sender
+        zkReadData(connection, state, path).onComplete {
           case Success(v) =>
             Try {
               val maybeData = Option(state.serializer.deserialize(v._1)) match {
@@ -847,93 +851,97 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
                   Some(data)
                 case None => None
               }
-              sender ! ZkResponseProtocol.Data(req, maybeData, Option(v._2))
+              origSender ! ZkResponseProtocol.Data(req, maybeData, Option(v._2))
             }.recover {
               case e: Throwable =>
                 metricErrorsCount.inc()
-                sender ! ZkResponseProtocol.OperationError(req, e)
+                origSender ! ZkResponseProtocol.OperationError(req, e)
             }
           case Failure(e) =>
             if (noneIfNoPath) {
               e match {
-                case _: KeeperException.NoNodeException => sender ! ZkResponseProtocol.Data(req, None, None)
+                case _: KeeperException.NoNodeException => origSender ! ZkResponseProtocol.Data(req, None, None)
                 case _ =>
                   metricErrorsCount.inc()
-                  sender ! ZkResponseProtocol.OperationError(req, e)
+                  origSender ! ZkResponseProtocol.OperationError(req, e)
               }
             } else {
               metricErrorsCount.inc()
-              sender ! ZkResponseProtocol.OperationError(req, e)
+              origSender ! ZkResponseProtocol.OperationError(req, e)
             }
         }
       }
 
     case req @ ZkRequestProtocol.WriteData(path, maybeData, expectedVersion) =>
       withMaybeConnection(state) { connection =>
+        val origSender = sender
         zkWriteData(
           connection,
           state.serializer,
           path,
           maybeData.getOrElse(null.asInstanceOf[Array[Byte]]),
-          expectedVersion) match {
+          expectedVersion).onComplete {
           case Success(v) =>
             metricBytesWritten.inc(v.getDataLength)
-            sender ! ZkResponseProtocol.Written(req, v)
+            origSender ! ZkResponseProtocol.Written(req, v)
             if (isPathWatchable(state, path)) { // reinstall the watch, if necessary
               zkExists(connection, state, path)
             }
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.CreatedWhen(path) =>
       withMaybeConnection(state) { connection =>
-        zkReadData(connection, state, path) match {
-          case Success(v) => sender ! ZkResponseProtocol.CreatedAt(req, v._2.getCtime)
+        val origSender = sender
+        zkReadData(connection, state, path).onComplete {
+          case Success(v) => origSender ! ZkResponseProtocol.CreatedAt(req, v._2.getCtime)
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.Delete(path, version) =>
       withMaybeConnection(state) { connection =>
-        Try { connection.delete(path, version) } match {
+        val origSender = sender
+        zkDelete(connection, path, version).onComplete {
           case Success(_) =>
             metricZnodesDeletedCount.inc()
-            sender ! ZkResponseProtocol.Deleted(req)
+            origSender ! ZkResponseProtocol.Deleted(req)
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.GetAcl(path) =>
       withMaybeConnection(state) { connection =>
-        val stat = new Stat()
-        Try { connection.getACL(path, stat) } match {
-          case Success(v) => sender ! ZkResponseProtocol.AclData(req, AclEntry(v.asScala.toList, stat))
+        val origSender = sender
+        zkGetAcl(connection, path).onComplete {
+          case Success(v) => origSender ! ZkResponseProtocol.AclData(req, AclEntry(v._1.asScala.toList, v._2))
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
     case req @ ZkRequestProtocol.SetAcl(path, acl) =>
       withMaybeConnection(state) { connection =>
-        zkReadData(connection, state, path) match {
+        val origSender = sender
+        zkReadData(connection, state, path).onComplete {
           case Success(v) =>
-            Try { connection.setACL(path, acl.asJava, v._2.getAversion) } match {
-              case Success(_) => sender ! ZkResponseProtocol.AclSet(req)
+            zkSetAcl(connection, path, acl.asJava, v._2.getAversion).onComplete {
+              case Success(_) => origSender ! ZkResponseProtocol.AclSet(req)
               case Failure(e) =>
                 metricErrorsCount.inc()
-                sender ! ZkResponseProtocol.OperationError(req, e)
+                origSender ! ZkResponseProtocol.OperationError(req, e)
             }
           case Failure(e) =>
             metricErrorsCount.inc()
-            sender ! ZkResponseProtocol.OperationError(req, e)
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -1081,25 +1089,112 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
     }
   }
 
-  private def zkCreate(connection: ZooKeeper, serializer: ZkSerializer, path: String, maybeData: Option[Any], acls: List[ACL], mode: CreateMode): Try[String] = {
-    Try { connection.create(path, serializer.serialize(maybeData), acls.asJava, mode) }
+  private def zkCreate(connection: ZooKeeper, serializer: ZkSerializer, path: String, maybeData: Option[Any], acls: List[ACL], mode: CreateMode): Future[String] = {
+    val p = Promise[String]()
+    connection.create(path, serializer.serialize(maybeData), acls.asJava, mode, new StringCallback {
+      override def processResult(rc: Int, path: String, ctx: scala.Any, name: String) = {
+        if (rc == KeeperException.Code.OK.intValue()) {
+          p.success(name)
+        } else {
+          p.failure(KeeperException.create(KeeperException.Code.get(rc), path))
+        }
+      }
+    }, None)
+    p.future
   }
 
-  private def zkGetChildren(connection: ZooKeeper, state: ZkClientState, path: String): Try[java.util.List[String]] = {
-    Try { connection.getChildren(path, isPathWatchable(state, path)) }
+  private def zkDelete(connection: ZooKeeper, path: String, version: Int): Future[Unit] = {
+    val p = Promise[Unit]()
+    connection.delete(path, version, new VoidCallback {
+      override def processResult(rc: Int, path: String, ctx: scala.Any) = {
+        if (rc == KeeperException.Code.OK.intValue()) {
+          p.success()
+        } else {
+          p.failure(KeeperException.create(KeeperException.Code.get(rc), path))
+        }
+      }
+    }, None)
+    p.future
   }
 
-  private def zkExists(connection: ZooKeeper, state: ZkClientState, path: String): Try[Boolean] = {
-    Try { Option(connection.exists(path, isPathWatchable(state, path))) != None }
+  private def zkExists(connection: ZooKeeper, state: ZkClientState, path: String): Future[Boolean] = {
+    val p = Promise[Boolean]()
+    connection.exists(path, isPathWatchable(state, path), new StatCallback {
+      override def processResult(rc: Int, path: String, ctx: scala.Any, stat: Stat) = {
+        p.success(Option(stat) != None)
+      }
+    }, None)
+    p.future
   }
 
-  private def zkReadData(connection: ZooKeeper, state: ZkClientState, path: String): Try[Tuple2[Array[Byte], Stat]] = {
-    val stat = new Stat()
-    Try { (connection.getData(path, isPathWatchable(state, path), stat), stat) }
+  private def zkGetAcl(connection: ZooKeeper, path: String): Future[Tuple2[java.util.List[ACL], Stat]] = {
+    val p = Promise[Tuple2[java.util.List[ACL], Stat]]()
+    connection.getACL(path, new Stat(), new ACLCallback {
+      override def processResult(rc: Int, path: String, ctx: scala.Any, acl: JList[ACL], stat: Stat) = {
+        if (rc == KeeperException.Code.OK.intValue()) {
+          p.success((acl, stat))
+        } else {
+          p.failure(KeeperException.create(KeeperException.Code.get(rc), path))
+        }
+      }
+    }, None)
+    p.future
   }
 
-  private def zkWriteData(connection: ZooKeeper, serializer: ZkSerializer, path: String, data: Any, expectedVersion: Int): Try[Stat] = {
-    Try { connection.setData(path, serializer.serialize(data), expectedVersion) }
+  private def zkGetChildren(connection: ZooKeeper, state: ZkClientState, path: String): Future[Tuple2[java.util.List[String], Stat]] = {
+    val p = Promise[Tuple2[java.util.List[String], Stat]]()
+    connection.getChildren(path, isPathWatchable(state, path), new Children2Callback {
+      override def processResult(rc: Int, path: String, ctx: scala.Any, children: JList[String], stat: Stat) = {
+        if (rc == KeeperException.Code.OK.intValue()) {
+          p.success((children, stat))
+        } else {
+          p.failure(KeeperException.create(KeeperException.Code.get(rc), path))
+        }
+      }
+    }, None)
+    p.future
+  }
+
+  private def zkReadData(connection: ZooKeeper, state: ZkClientState, path: String): Future[Tuple2[Array[Byte], Stat]] = {
+    val p = Promise[Tuple2[Array[Byte], Stat]]()
+    connection.getData(path, isPathWatchable(state, path), new DataCallback {
+      override def processResult(rc: Int, path: String, ctx: scala.Any, data: Array[Byte], stat: Stat) = {
+        if (rc == KeeperException.Code.OK.intValue()) {
+          p.success((data, stat))
+        } else {
+          p.failure(KeeperException.create(KeeperException.Code.get(rc), path))
+        }
+      }
+    }, None)
+    p.future
+  }
+
+  private def zkSetAcl(connection: ZooKeeper, path: String, acl: java.util.List[ACL], version: Int): Future[Stat] = {
+    val p = Promise[Stat]()
+    connection.setACL(path, acl, version, new StatCallback {
+      override def processResult(rc: Int, path: String, ctx: scala.Any, stat: Stat) = {
+        if (rc == KeeperException.Code.OK.intValue()) {
+          p.success(stat)
+        } else {
+          p.failure(KeeperException.create(KeeperException.Code.get(rc), path))
+        }
+      }
+    }, None)
+    p.future
+  }
+
+  private def zkWriteData(connection: ZooKeeper, serializer: ZkSerializer, path: String, data: Any, expectedVersion: Int): Future[Stat] = {
+    val p = Promise[Stat]()
+    connection.setData(path, serializer.serialize(data), expectedVersion, new StatCallback {
+      override def processResult(rc: Int, path: String, ctx: scala.Any, stat: Stat) = {
+        if (rc == KeeperException.Code.OK.intValue()) {
+          p.success(stat)
+        } else {
+          p.failure(KeeperException.create(KeeperException.Code.get(rc), path))
+        }
+      }
+    }, None)
+    p.future
   }
 
   @throws[ZkClientInvalidStateException]
