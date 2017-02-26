@@ -2,6 +2,15 @@
 
 Reactive akka ZooKeeper client.
 
+What's in it:
+
+ - all the features of the ZooKeeper client 3.4.9 (ACL, authentication, whatnot...)
+ - persistent watches
+ - watches emitted with [Reactive Streams](https://github.com/reactive-streams/reactive-streams-jvm), can be consumed with `akka-stream`
+ - fully async (*almost, heh: with an exception of recursive delete children collection*)
+ - metrics
+ - plenty of unit tests
+
 ## Build status
 
 [![Build Status](https://travis-ci.org/AppMinistry/akka-zk.svg?branch=master)](https://travis-ci.org/AppMinistry/akka-zk)

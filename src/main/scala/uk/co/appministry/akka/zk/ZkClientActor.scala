@@ -769,13 +769,7 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
           log.warning(s"Expected the path to be not null when processing child change event: $event.")
       }
 
-    case ZkRequestProtocol.Stop() =>
-      log.debug("Stop requested...")
-      become(disconnecting, state)
-      context.system.stop(self)
-
-    case ZkRequestProtocol.SetSerializer(serializer) =>
-      become(connected, state.copy(serializer = serializer))
+    // -- Requests
 
     case req @ ZkRequestProtocol.AddAuthInfo(scheme, authInfo) =>
       withMaybeConnection(state) { connection =>
@@ -787,14 +781,14 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
         }
       }
 
-    case req @ ZkRequestProtocol.CreatePersistent(path, maybeData, acls, sequential, createParents) =>
+    case req @ ZkRequestProtocol.CountChildren(path) =>
       withMaybeConnection(state) { connection =>
-        val baseMode = CreateMode.PERSISTENT
-        val mode = if (sequential) CreateMode.PERSISTENT_SEQUENTIAL else baseMode
         val origSender = sender
-        val paths = if (createParents) subPaths(path) else List(path)
-        zkCreatePaths(req, connection, state.serializer, paths, maybeData, acls, mode, baseMode, None) { result =>
-          origSender ! result
+        zkGetChildren(connection, state, path).onComplete {
+          case Success(v) => origSender ! ZkResponseProtocol.ChildrenCount(req, v._1.size())
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            origSender ! ZkResponseProtocol.OperationError(req, e)
         }
       }
 
@@ -810,92 +804,14 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
         }
       }
 
-    case req @ ZkRequestProtocol.GetChildren(path, maybeWatch) =>
+    case req @ ZkRequestProtocol.CreatePersistent(path, maybeData, acls, sequential, createParents) =>
       withMaybeConnection(state) { connection =>
+        val baseMode = CreateMode.PERSISTENT
+        val mode = if (sequential) CreateMode.PERSISTENT_SEQUENTIAL else baseMode
         val origSender = sender
-        zkGetChildren(connection, state, path).onComplete {
-          case Success(v) => origSender ! ZkResponseProtocol.Children(req, v._1.asScala.toList.sorted)
-          case Failure(e) =>
-            metricErrorsCount.inc()
-            origSender ! ZkResponseProtocol.OperationError(req, e)
-        }
-      }
-
-    case req @ ZkRequestProtocol.CountChildren(path) =>
-      withMaybeConnection(state) { connection =>
-        val origSender = sender
-        zkGetChildren(connection, state, path).onComplete {
-          case Success(v) => origSender ! ZkResponseProtocol.ChildrenCount(req, v._1.size())
-          case Failure(e) =>
-            metricErrorsCount.inc()
-            origSender ! ZkResponseProtocol.OperationError(req, e)
-        }
-      }
-
-    case req @ ZkRequestProtocol.IsExisting(path) =>
-      withMaybeConnection(state) { connection =>
-        val origSender = sender
-        zkExists(connection, state, path).onComplete {
-          case Success(v) =>
-            val status = if (v) PathExistenceStatus.Exists else PathExistenceStatus.DoesNotExist
-            origSender ! ZkResponseProtocol.Existence(req, status)
-          case Failure(e) =>
-            metricErrorsCount.inc()
-            origSender ! ZkResponseProtocol.OperationError(req, e)
-        }
-      }
-
-    case req @ ZkRequestProtocol.ReadData(path, noneIfNoPath) =>
-      withMaybeConnection(state) { connection =>
-        val origSender = sender
-        zkReadData(connection, state, path).onComplete {
-          case Success(v) =>
-            Try {
-              val maybeData = Option(state.serializer.deserialize(v._1)) match {
-                case Some(data) =>
-                  metricBytesRead.inc(v._1.length)
-                  Some(data)
-                case None => None
-              }
-              origSender ! ZkResponseProtocol.Data(req, maybeData, Option(v._2))
-            }.recover {
-              case e: Throwable =>
-                metricErrorsCount.inc()
-                origSender ! ZkResponseProtocol.OperationError(req, e)
-            }
-          case Failure(e) =>
-            if (noneIfNoPath) {
-              e match {
-                case _: KeeperException.NoNodeException => origSender ! ZkResponseProtocol.Data(req, None, None)
-                case _ =>
-                  metricErrorsCount.inc()
-                  origSender ! ZkResponseProtocol.OperationError(req, e)
-              }
-            } else {
-              metricErrorsCount.inc()
-              origSender ! ZkResponseProtocol.OperationError(req, e)
-            }
-        }
-      }
-
-    case req @ ZkRequestProtocol.WriteData(path, maybeData, expectedVersion) =>
-      withMaybeConnection(state) { connection =>
-        val origSender = sender
-        zkWriteData(
-          connection,
-          state.serializer,
-          path,
-          maybeData.getOrElse(null.asInstanceOf[Array[Byte]]),
-          expectedVersion).onComplete {
-          case Success(v) =>
-            metricBytesWritten.inc(v.getDataLength)
-            origSender ! ZkResponseProtocol.Written(req, v)
-            if (isPathWatchable(state, path)) { // reinstall the watch, if necessary
-              zkExists(connection, state, path)
-            }
-          case Failure(e) =>
-            metricErrorsCount.inc()
-            origSender ! ZkResponseProtocol.OperationError(req, e)
+        val paths = if (createParents) subPaths(path) else List(path)
+        zkCreatePaths(req, connection, state.serializer, paths, maybeData, acls, mode, baseMode, None) { result =>
+          origSender ! result
         }
       }
 
@@ -958,6 +874,85 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
         }
       }
 
+    case req @ ZkRequestProtocol.GetChildren(path, maybeWatch) =>
+      withMaybeConnection(state) { connection =>
+        val origSender = sender
+        zkGetChildren(connection, state, path).onComplete {
+          case Success(v) => origSender ! ZkResponseProtocol.Children(req, v._1.asScala.toList.sorted)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            origSender ! ZkResponseProtocol.OperationError(req, e)
+        }
+      }
+
+    case req @ ZkRequestProtocol.IsExisting(path) =>
+      withMaybeConnection(state) { connection =>
+        val origSender = sender
+        zkExists(connection, state, path).onComplete {
+          case Success(v) =>
+            val status = if (v) PathExistenceStatus.Exists else PathExistenceStatus.DoesNotExist
+            origSender ! ZkResponseProtocol.Existence(req, status)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            origSender ! ZkResponseProtocol.OperationError(req, e)
+        }
+      }
+
+    case req @ ZkRequestProtocol.IsSaslEnabled() =>
+      zkSasl(req) match {
+        case Left(saslResponse) => sender ! saslResponse
+        case Right(error) =>
+          metricErrorsCount.inc()
+          sender ! error
+      }
+
+    case req @ ZkRequestProtocol.Metrics() =>
+      sender ! ZkResponseProtocol.Metrics(req, metricsAsMap())
+
+    case req @ ZkRequestProtocol.Multi(ops) =>
+      withMaybeConnection(state) { connection =>
+        val origSender = sender
+        zkMulti(connection, ops.asJava).onComplete {
+          case Success(v) => origSender ! ZkResponseProtocol.MultiResponse(req, v.asScala.toList)
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            origSender ! ZkResponseProtocol.OperationError(req, e)
+        }
+      }
+
+    case req @ ZkRequestProtocol.ReadData(path, noneIfNoPath) =>
+      withMaybeConnection(state) { connection =>
+        val origSender = sender
+        zkReadData(connection, state, path).onComplete {
+          case Success(v) =>
+            Try {
+              val maybeData = Option(state.serializer.deserialize(v._1)) match {
+                case Some(data) =>
+                  metricBytesRead.inc(v._1.length)
+                  Some(data)
+                case None => None
+              }
+              origSender ! ZkResponseProtocol.Data(req, maybeData, Option(v._2))
+            }.recover {
+              case e: Throwable =>
+                metricErrorsCount.inc()
+                origSender ! ZkResponseProtocol.OperationError(req, e)
+            }
+          case Failure(e) =>
+            if (noneIfNoPath) {
+              e match {
+                case _: KeeperException.NoNodeException => origSender ! ZkResponseProtocol.Data(req, None, None)
+                case _ =>
+                  metricErrorsCount.inc()
+                  origSender ! ZkResponseProtocol.OperationError(req, e)
+              }
+            } else {
+              metricErrorsCount.inc()
+              origSender ! ZkResponseProtocol.OperationError(req, e)
+            }
+        }
+      }
+
     case req @ ZkRequestProtocol.SetAcl(path, acl) =>
       withMaybeConnection(state) { connection =>
         val origSender = sender
@@ -975,24 +970,13 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
         }
       }
 
-    case req @ ZkRequestProtocol.Multi(ops) =>
-      withMaybeConnection(state) { connection =>
-        val origSender = sender
-        zkMulti(connection, ops.asJava).onComplete {
-          case Success(v) => origSender ! ZkResponseProtocol.MultiResponse(req, v.asScala.toList)
-          case Failure(e) =>
-            metricErrorsCount.inc()
-            origSender ! ZkResponseProtocol.OperationError(req, e)
-        }
-      }
+    case ZkRequestProtocol.SetSerializer(serializer) =>
+      become(connected, state.copy(serializer = serializer))
 
-    case req @ ZkRequestProtocol.IsSaslEnabled() =>
-      zkSasl(req) match {
-        case Left(saslResponse) => sender ! saslResponse
-        case Right(error) =>
-          metricErrorsCount.inc()
-          sender ! error
-      }
+    case ZkRequestProtocol.Stop() =>
+      log.debug("Stop requested...")
+      become(disconnecting, state)
+      context.system.stop(self)
 
     case req @ ZkRequestProtocol.SubscribeChildChanges(path) =>
       withMaybeConnection(state) { connection =>
@@ -1030,8 +1014,28 @@ class ZkClientActor() extends Actor with ActorLogging with ZkClientWatcher {
       }
       sender ! ZkResponseProtocol.UnsubscriptionSuccess(req)
 
-    case req @ ZkRequestProtocol.Metrics() =>
-      sender ! ZkResponseProtocol.Metrics(req, metricsAsMap())
+    case req @ ZkRequestProtocol.WriteData(path, maybeData, expectedVersion) =>
+      withMaybeConnection(state) { connection =>
+        val origSender = sender
+        zkWriteData(
+          connection,
+          state.serializer,
+          path,
+          maybeData.getOrElse(null.asInstanceOf[Array[Byte]]),
+          expectedVersion).onComplete {
+          case Success(v) =>
+            metricBytesWritten.inc(v.getDataLength)
+            origSender ! ZkResponseProtocol.Written(req, v)
+            if (isPathWatchable(state, path)) { // reinstall the watch, if necessary
+              zkExists(connection, state, path)
+            }
+          case Failure(e) =>
+            metricErrorsCount.inc()
+            origSender ! ZkResponseProtocol.OperationError(req, e)
+        }
+      }
+
+    // -- Any other
 
     case anyOther =>
       log.debug(s"Unexpected message in connected: $anyOther.")
